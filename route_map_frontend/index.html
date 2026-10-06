@@ -18,6 +18,7 @@
     .selected { fill: none; stroke: #2F2C88; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
     .segment { fill: none; stroke: #D74642; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
     .mark { fill: white; stroke-width: 4; }
+    .mark.corner-mark { fill: #2F2C88; stroke: #FFFFFF; stroke-width: 2; }
     .hint { margin: 8px 0; color: #425F80; }
     .ranges { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 10px 2px 0; }
     label { display: block; font-weight: 600; }
@@ -119,6 +120,7 @@
       svg.querySelectorAll(".segment").forEach(el => el.remove());
       svg.querySelectorAll(".mark").forEach(el => el.remove());
       svg.querySelectorAll(".trim-label").forEach(el => el.remove());
+      svg.querySelectorAll(".corner-label").forEach(el => el.remove());
 
       if (colored) {
         const end = args.mode === "trim" ? b : projected.length - 1;
@@ -147,8 +149,25 @@
         const [cx, cy] = projected[index];
         const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         circle.setAttribute("cx", cx); circle.setAttribute("cy", cy); circle.setAttribute("r", "8");
-        circle.setAttribute("class", "mark"); circle.setAttribute("stroke", marker.color || "#D74642");
+        circle.setAttribute("class", marker.label ? "mark corner-mark" : "mark");
+        circle.setAttribute("stroke", marker.color || "#D74642");
+        if (marker.label) {
+          circle.setAttribute("r", "11");
+        }
         svg.appendChild(circle);
+        if (marker.label) {
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("x", cx); text.setAttribute("y", cy);
+          text.setAttribute("dy", "0.35em");
+          text.setAttribute("text-anchor", "middle");
+          text.setAttribute("font-size", "9");
+          text.setAttribute("font-weight", "700");
+          text.setAttribute("fill", "#FFFFFF");
+          text.setAttribute("pointer-events", "none");
+          text.setAttribute("class", "corner-label");
+          text.textContent = marker.label;
+          svg.appendChild(text);
+        }
       });
 
       if (args.mode === "trim") {

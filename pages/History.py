@@ -158,6 +158,40 @@ session_history = load_csv(SESSION_HISTORY_PATH)
 lap_history = load_csv(LAP_HISTORY_PATH)
 
 with st.container(border=True):
+    st.header("Season overview")
+    latest_sessions = session_history.copy()
+    if not latest_sessions.empty and "date" in latest_sessions:
+        latest_sessions["_date"] = pd.to_datetime(
+            latest_sessions["date"], errors="coerce",
+        )
+        latest_sessions = latest_sessions.sort_values(
+            "_date", kind="stable", na_position="first",
+        )
+    latest = latest_sessions.iloc[-1] if not latest_sessions.empty else None
+
+    def latest_metric(column, suffix="", multiplier=1):
+        if latest is None or column not in latest.index:
+            return "n/a"
+        value = pd.to_numeric(pd.Series([latest[column]]), errors="coerce").iloc[0]
+        return f"{value * multiplier:.0f}{suffix}" if pd.notna(value) else "n/a"
+
+    total_laps = (
+        pd.to_numeric(session_history["n_laps"], errors="coerce").sum()
+        if "n_laps" in session_history else 0
+    )
+    overview_cols = st.columns(3)
+    overview_cols[0].metric("Rides saved", len(session_history))
+    overview_cols[1].metric(
+        "Latest speed retained through corners",
+        latest_metric("retained_ratio", "%", 100),
+    )
+    overview_cols[2].metric(
+        "Latest power out of corners",
+        latest_metric("power_after_corner_w", " W"),
+    )
+    st.caption(f"{int(total_laps)} laps saved · comparison rides are not included.")
+
+with st.container(border=True):
     st.header("Progress graphs")
     if session_history.empty:
         st.info("No session history yet. Add a ride from the Analysis page.")

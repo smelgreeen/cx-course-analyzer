@@ -140,6 +140,77 @@ st.markdown(
     input, textarea, [data-baseweb="select"] > div {
         border-color: var(--cx-slate);
     }
+    .cx-dashboard-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: #2F2C88;
+        color: #FFFFFF;
+        padding: 0.75rem 1.2rem;
+        border-radius: 8px;
+        margin: 0 0 1rem;
+    }
+    .cx-dashboard-header h1 {
+        color: #FFFFFF;
+        font-family: Georgia, serif;
+        font-size: 2.1rem;
+        margin: 0;
+    }
+    .st-key-landing-map-card {
+        position: relative !important;
+        min-height: 465px;
+    }
+    .st-key-landing-map-card [data-testid="stMarkdown"] svg {
+        display: block;
+        width: 100%;
+        height: 385px;
+        border-radius: 8px;
+        background: #DDE8E2;
+    }
+    .st-key-landing-map-card .st-key-main_fit_upload {
+        position: absolute !important;
+        top: 200px !important;
+        left: 50%;
+        z-index: 5;
+        width: min(250px, 75%);
+        transform: translate(-50%, -50%);
+        padding: 0.4rem 0.65rem;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 2px 10px rgba(15, 14, 42, 0.18);
+    }
+    .st-key-landing-map-card .st-key-main_fit_upload [data-testid="stFileUploader"] section,
+    .st-key-landing-map-card .st-key-main_fit_upload [data-testid="stFileUploaderDropzone"] {
+        padding: 0;
+        border: 0;
+        background: transparent;
+    }
+    .st-key-landing-map-card .st-key-main_fit_upload small {
+        display: none;
+    }
+    .cx-placeholder-map {
+        width: 100%;
+        height: 385px;
+        border-radius: 8px;
+        background: linear-gradient(145deg, #D9E6DF, #B9CEC6);
+    }
+    .cx-placeholder-label {
+        fill: #425F80;
+        font: 600 16px system-ui, sans-serif;
+    }
+    .cx-comparison-placeholder {
+        min-height: 220px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #DEDEE8;
+        border-radius: 8px;
+        background: #E6E8E8;
+        color: #425F80;
+        font-weight: 600;
+        text-align: center;
+        padding: 1rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -148,12 +219,102 @@ st.markdown(
 COURSES_DIR = "courses"
 HISTORY_DIR = "history"
 LAP_HISTORY_FILE = "lap_history.csv"
-GATE_RADIUS_M = 12
+GATE_RADIUS_M = 6
 MIN_LAP_GAP_S = 20
 os.makedirs(COURSES_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
-SPEED_GREEN_TO_RED = ["#16803c", "#b8d96c", "#ffd166", "#d73027"]
-SPEED_BLUE_TO_PURPLE = ["#d9f0ff", "#54a6d8", "#5145a5", "#30104b"]
+SPEED_RED_TO_GREEN = ["#d73027", "#ffd166", "#b8d96c", "#16803c"]
+
+
+def render_comparison_placeholder():
+    with st.container(border=True):
+        st.subheader("Ride comparison")
+        st.caption(
+            "Ride 1 stays visible while you set up the course. Upload a second "
+            "FIT file any time; comparisons will appear once setup is complete."
+        )
+        map_col_one, map_col_two = st.columns(2, gap="medium")
+        ride_1_df = (
+            st.session_state.trimmed_df
+            if st.session_state.trimmed_df is not None
+            else st.session_state.raw_df
+        )
+        with map_col_one.container(border=True):
+            st.markdown("**Ride 1 course map**")
+            if (
+                ride_1_df is not None
+                and {"x", "y"}.issubset(ride_1_df.columns)
+                and len(ride_1_df) > 1
+            ):
+                speed_column = next(
+                    (column for column in ("mph", "speed_mph")
+                     if column in ride_1_df.columns),
+                    None,
+                )
+                figure = go.Figure()
+                if speed_column is not None:
+                    ride_speed = pd.to_numeric(
+                        ride_1_df[speed_column], errors="coerce",
+                    ).to_numpy(dtype=float)
+                else:
+                    ride_speed = np.array([], dtype=float)
+                if speed_column is not None and np.isfinite(ride_speed).any():
+                    add_gradient_route(
+                        figure, ride_1_df["x"], ride_1_df["y"], ride_speed,
+                        SPEED_RED_TO_GREEN, "Ride 1",
+                    )
+                else:
+                    figure.add_trace(go.Scatter(
+                        x=ride_1_df["x"], y=ride_1_df["y"],
+                        mode="lines", line=dict(color="#16803c", width=6),
+                        showlegend=False,
+                    ))
+                figure.update_layout(
+                    height=360, dragmode="pan",
+                    yaxis=dict(scaleanchor="x", scaleratio=1),
+                    margin=dict(l=10, r=15, t=10, b=10),
+                    showlegend=False,
+                )
+                st.plotly_chart(
+                    figure, use_container_width=True,
+                    config={"scrollZoom": True, "displayModeBar": True},
+                    key="ride1-comparison-map-setup",
+                )
+            else:
+                st.markdown(
+                    '<div class="cx-comparison-placeholder">'
+                    'Ride 1 map will appear after uploading a FIT file</div>',
+                    unsafe_allow_html=True,
+                )
+        with map_col_two.container(border=True):
+            st.markdown("**Ride 2**")
+            st.markdown(
+                '<div class="cx-comparison-placeholder">'
+                'Upload a second FIT file to compare</div>',
+                unsafe_allow_html=True,
+            )
+            comparison_upload = st.file_uploader(
+                "Upload second FIT file",
+                type=["fit"],
+                key="comparison_fit_upload",
+                help="This file will be compared after Ride 1 course setup is complete.",
+            )
+        if comparison_upload is not None:
+            st.session_state.comparison_upload_data = comparison_upload.getvalue()
+            st.session_state.comparison_upload_name = comparison_upload.name
+        else:
+            st.session_state.pop("comparison_upload_data", None)
+            st.session_state.pop("comparison_upload_name", None)
+        table_col_one, table_col_two = st.columns(2)
+        with table_col_one:
+            st.dataframe(pd.DataFrame({
+                "Metric": ["Laps", "Average lap", "Average power", "Corner retention"],
+                "Ride 1": ["—", "—", "—", "—"],
+                "Ride 2": ["—", "—", "—", "—"],
+                "Δ": ["—", "—", "—", "—"],
+            }), hide_index=True, use_container_width=True)
+        with table_col_two:
+            st.info("Lap-by-lap comparison appears here after both rides are analyzed.")
 
 
 # --------------------------------------------------------------------------
@@ -177,6 +338,7 @@ def init_state():
         feature_end_index=None,
         feature_editing=True,
         map_revision=0,
+        gate_radius_m=GATE_RADIUS_M,
         feature_type="",
         laps=None,
         grid=None, rx=None, ry=None, L=None,
@@ -362,7 +524,9 @@ def next_default_feature_name(features):
 def add_gradient_route(fig, x, y, values, colorscale, name, cmin=None,
                        cmax=None):
     """Draw a visually continuous route from short, speed-colored line runs."""
-    x, y, values = map(lambda item: np.asarray(item, dtype=float), (x, y, values))
+    x, y, values = map(
+        lambda item: np.asarray(item, dtype=float), (x, y, values),
+    )
     size = min(len(x), len(y), len(values))
     x, y, values = x[:size], y[:size], values[:size]
     if size < 2:
@@ -374,7 +538,15 @@ def add_gradient_route(fig, x, y, values, colorscale, name, cmin=None,
     high = float(np.max(finite)) if cmax is None else cmax
     if high <= low:
         high = low + 1.0
-    edge_values = (values[:-1] + values[1:]) / 2
+    left, right = values[:-1], values[1:]
+    edge_values = np.where(
+        np.isfinite(left) & np.isfinite(right),
+        (left + right) / 2,
+        np.where(
+            np.isfinite(left), left,
+            np.where(np.isfinite(right), right, (low + high) / 2),
+        ),
+    )
     normalized = np.clip((edge_values - low) / (high - low), 0, 1)
     buckets = np.rint(normalized * 63).astype(int)
     begin = 0
@@ -401,76 +573,274 @@ def add_gradient_route(fig, x, y, values, colorscale, name, cmin=None,
     ))
 
 
+def course_speed_figure(
+    rx, ry, speed, colorscale, name, cmin, cmax,
+    feature_positions, grid, course_length, corner_positions=(),
+):
+    route_x, route_y = np.r_[rx, rx[0]], np.r_[ry, ry[0]]
+    figure = go.Figure()
+    add_gradient_route(
+        figure, route_x, route_y, np.r_[speed, speed[0]],
+        colorscale, name, cmin, cmax,
+    )
+    for feature_name, start_pos, end_pos in feature_positions:
+        start_i = course_position_index(start_pos, grid, course_length)
+        end_i = course_position_index(end_pos, grid, course_length)
+        if start_i >= len(route_x) or end_i >= len(route_x):
+            continue
+        area_indices = (
+            list(range(start_i, end_i + 1)) if end_i >= start_i
+            else list(range(start_i, len(route_x))) + list(range(0, end_i + 1))
+        )
+        figure.add_trace(go.Scatter(
+            x=route_x[area_indices], y=route_y[area_indices],
+            mode="lines", line=dict(color="#0F0E2A", width=2, dash="dot"),
+            name=f"{feature_name} feature area", showlegend=False,
+            hovertemplate=f"{feature_name} feature area<extra></extra>",
+        ))
+        for position, label in (
+            (start_pos, f"{feature_name} start"),
+            (end_pos, f"{feature_name} end"),
+        ):
+            index = course_position_index(position, grid, course_length) % len(rx)
+            figure.add_trace(go.Scatter(
+                x=[rx[index]], y=[ry[index]], mode="markers+text",
+                marker=dict(size=10, color="#0F0E2A"),
+                text=[label], textposition="top center",
+                showlegend=False, hoverinfo="skip",
+            ))
+    if corner_positions:
+        corner_indices = [index for index, _ in corner_positions]
+        figure.add_trace(go.Scatter(
+            x=np.asarray(rx)[corner_indices],
+            y=np.asarray(ry)[corner_indices],
+            mode="markers+text",
+            marker=dict(size=20, color="#2F2C88", line=dict(color="white", width=2)),
+            text=[f"C{number}" for number in range(1, len(corner_indices) + 1)],
+            textposition="middle center",
+            textfont=dict(size=9, color="white"),
+            name="Ride 1 corners",
+            showlegend=False,
+            hovertemplate="Corner %{text}<extra></extra>",
+        ))
+    figure.update_layout(
+        height=420, dragmode="pan",
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+        margin=dict(l=10, r=15, t=10, b=10), showlegend=False,
+    )
+    return figure
+
+
+def detect_ride1_corners(grid, profiles, course_length, excluded_intervals):
+    mean_speed = np.nanmean(profiles, axis=0)
+    if (
+        not len(grid) or not np.isfinite(mean_speed).any()
+        or course_length <= 0
+    ):
+        return []
+
+    # Smooth GPS/sample noise without washing out short course features.
+    smooth_speed = (
+        np.roll(mean_speed, 1) + mean_speed + np.roll(mean_speed, -1)
+    ) / 3
+    local_minima = (
+        (smooth_speed > 2)
+        & (smooth_speed <= np.roll(smooth_speed, 1))
+        & (smooth_speed <= np.roll(smooth_speed, -1))
+        & (
+            (smooth_speed < np.roll(smooth_speed, 1))
+            | (smooth_speed < np.roll(smooth_speed, -1))
+        )
+    )
+    median_speed = float(np.nanmedian(smooth_speed))
+    candidates = []
+    for index in np.flatnonzero(local_minima):
+        position = float(grid[index])
+        if any(
+            start <= position <= end if start <= end
+            else position >= start or position <= end
+            for start, end in excluded_intervals
+        ):
+            continue
+        offsets = (grid - position) % course_length
+        left = smooth_speed[(offsets >= 20) & (offsets <= 80)]
+        right = smooth_speed[
+            ((course_length - offsets) >= 20)
+            & ((course_length - offsets) <= 80)
+        ]
+        if not left.size or not right.size:
+            continue
+        surrounding_speed = min(float(np.nanmax(left)), float(np.nanmax(right)))
+        prominence = surrounding_speed - float(smooth_speed[index])
+        required_prominence = max(0.9, surrounding_speed * 0.06)
+        if (
+            prominence >= required_prominence
+            and smooth_speed[index] < median_speed - 0.4
+        ):
+            candidates.append((int(index), prominence))
+
+    # Merge nearby minima while keeping the strongest slowdown in each corner.
+    selected = []
+    for index, _ in sorted(candidates, key=lambda item: item[1], reverse=True):
+        position = float(grid[index])
+        if all(
+            min(
+                abs(position - grid[other]),
+                course_length - abs(position - grid[other]),
+            ) >= 25
+            for other in selected
+        ):
+            selected.append(index)
+    selected.sort(key=lambda item: grid[item])
+    return [(index, float(grid[index])) for index in selected]
+
+
+def ride1_corner_speed_table(
+    grid, profiles, course_length, corners,
+):
+    rows = []
+    for lap_number, lap_profile in enumerate(profiles, start=1):
+        row = {"Lap": lap_number}
+        for corner_number, (index, position) in enumerate(corners, start=1):
+            distance = np.abs(grid - position)
+            distance = np.minimum(distance, course_length - distance)
+            speeds = lap_profile[distance <= 20]
+            valid_speeds = speeds[np.isfinite(speeds) & (speeds > 2)]
+            row[f"Corner {corner_number} · {position:.0f} m"] = (
+                round(float(np.min(valid_speeds)), 1) if valid_speeds.size else None
+            )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 # --------------------------------------------------------------------------
 # Sidebar: file upload
 # --------------------------------------------------------------------------
 
 st.sidebar.title("CX Course Analyzer")
-uploaded = st.sidebar.file_uploader("Upload a .fit file", type=["fit"])
-
-if uploaded is not None and st.session_state.raw_df is None:
-    st.session_state.ride_1_filename = uploaded.name
-    try:
-        r, _laps_fit = fu.parse_fit(uploaded.read())
-    except Exception as e:
-        st.sidebar.error(f"Couldn't read this file: {e}")
-        r = None
-    if r is not None:
-        lat0, lon0 = r["lat"].mean(), r["lon"].mean()
-        r = fu.to_local_xy(r, lat0, lon0)
-        st.session_state.raw_df = r
-        st.session_state.lat0 = lat0
-        st.session_state.lon0 = lon0
-        st.session_state.trimmed_df = r
-        st.session_state.trim_end_idx = len(r) - 1
-
 if st.sidebar.button("Start over with a new file"):
     for k in list(st.session_state.keys()):
         del st.session_state[k]
     st.rerun()
 
 if st.session_state.raw_df is None:
-    st.title("Cyclocross Course Analyzer")
-    st.write(
-        "Upload a `.fit` file on the left to get started. You'll be able to "
-        "trim out the ride to/from the course, click to mark the start/finish "
-        "line and any features (barrier, flyover, hairpin, ...), and get lap "
-        "splits, per-feature consistency stats, and a course map colored by speed."
+    st.markdown(
+        '<div class="cx-dashboard-header"><h1>Analyzer 3000</h1>'
+        '<span>Ride analysis</span></div>', unsafe_allow_html=True,
     )
+    landing_map_col, landing_data_col = st.columns([1.8, 1], gap="medium")
+    with landing_map_col:
+        with st.container(border=True, key="landing-map-card"):
+            st.markdown(
+                """
+                <svg class="cx-placeholder-map" viewBox="0 0 900 500"
+                     role="img" aria-label="Placeholder course map">
+                  <path d="M90 255 C55 170 130 155 170 185 C205 207 180 112 262 132
+                    C330 148 340 195 420 166 C495 139 525 73 598 105
+                    C672 139 625 205 566 223 C500 243 526 310 610 305
+                    C703 300 770 242 803 295 C836 350 762 395 690 363
+                    C625 335 573 420 499 389 C424 357 400 287 327 321
+                    C258 353 216 407 160 365 C111 328 132 294 90 255 Z"
+                    fill="none" stroke="#E4A78E" stroke-width="19"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M90 255 C55 170 130 155 170 185 C205 207 180 112 262 132
+                    C330 148 340 195 420 166 C495 139 525 73 598 105
+                    C672 139 625 205 566 223 C500 243 526 310 610 305
+                    C703 300 770 242 803 295 C836 350 762 395 690 363
+                    C625 335 573 420 499 389 C424 357 400 287 327 321
+                    C258 353 216 407 160 365 C111 328 132 294 90 255 Z"
+                    fill="none" stroke="#F3C4AE" stroke-width="12"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+                  <circle cx="263" cy="132" r="12" fill="#A9AC2F"/>
+                  <text x="670" y="115" class="cx-placeholder-label">Course map</text>
+                </svg>
+                """,
+                unsafe_allow_html=True,
+            )
+            landing_upload = st.file_uploader(
+                "Upload .fit file",
+                type=["fit"],
+                key="main_fit_upload",
+                help="Choose the main ride file to start your analysis.",
+            )
+    with landing_data_col:
+        with st.container(border=True):
+            st.subheader("Ride 1")
+            st.caption("Your ride metrics will appear here after upload.")
+            metric_a, metric_b = st.columns(2)
+            metric_a.metric("Corner speed retained", "—")
+            metric_b.metric("Power after corner", "—")
+            metric_c, metric_d = st.columns(2)
+            metric_c.metric("Entry speed", "—")
+            metric_d.metric("Apex speed", "—")
+            st.markdown("**Lap data**")
+            st.info("Upload a ride to see lap times, speed, and power.")
+
+    render_comparison_placeholder()
+
+    if landing_upload is not None:
+        st.session_state.ride_1_filename = landing_upload.name
+        try:
+            ride_data, _laps_fit = fu.parse_fit(landing_upload.getvalue())
+        except Exception as exc:
+            st.error(f"Couldn't read this FIT file: {exc}")
+        else:
+            if ride_data.empty or not {"lat", "lon"}.issubset(ride_data.columns):
+                st.error("This FIT file does not contain usable GPS coordinates.")
+            else:
+                lat0, lon0 = ride_data["lat"].mean(), ride_data["lon"].mean()
+                ride_data = fu.to_local_xy(ride_data, lat0, lon0)
+                st.session_state.raw_df = ride_data
+                st.session_state.lat0 = lat0
+                st.session_state.lon0 = lon0
+                st.session_state.trimmed_df = ride_data
+                st.session_state.trim_end_idx = len(ride_data) - 1
+                st.rerun()
     st.stop()
 
 r = st.session_state.raw_df
+
+st.markdown(
+    '<div class="cx-dashboard-header"><h1>Analyzer 3000</h1>'
+    '<span>Ride analysis</span></div>', unsafe_allow_html=True,
+)
+ride_1_name = st.session_state.ride_1_filename or "Ride 1"
+map_col, ride1_col = st.columns([1.8, 1], gap="medium")
+map_slot = map_col.empty()
+ride1_slot = ride1_col.empty()
+with ride1_slot.container(border=True):
+    st.subheader(f"Ride 1 · {ride_1_name}")
+    st.caption("Ride data is being prepared.")
+    placeholder_metrics = st.columns(2)
+    placeholder_metrics[0].metric("Corner speed retained", "—")
+    placeholder_metrics[1].metric("Power after corner", "—")
+    placeholder_metrics = st.columns(2)
+    placeholder_metrics[0].metric("Average entry speed", "—")
+    placeholder_metrics[1].metric("Average apex speed", "—")
+    st.markdown("**Lap data**")
+    st.info("Lap times, speed, power, and features will appear here.")
 
 # --------------------------------------------------------------------------
 # Step 1: trim to the part of the ride you want analyzed
 # --------------------------------------------------------------------------
 
-with st.container(border=True):
-    st.header("1. Trim to the course")
-    if not st.session_state.trim_confirmed:
+if not st.session_state.trim_confirmed:
+    if st.session_state.trim_end_idx is None:
+        st.session_state.trim_end_idx = len(r) - 1
+    st.session_state.trim_start_idx = min(st.session_state.trim_start_idx, len(r) - 2)
+    st.session_state.trim_end_idx = min(st.session_state.trim_end_idx, len(r) - 1)
+    with map_slot.container(border=True):
+        st.header("Trim to the course")
         st.caption(
-            "Drag the start and stop handles. Blue **S** and red **E** dots show the "
-            "selected endpoints; the route redraws immediately as you trim."
+            "Drag the start and stop handles. The route redraws immediately; "
+            "zoom in on tight sections before setting the trim endpoints."
         )
-        if st.session_state.trim_end_idx is None:
-            st.session_state.trim_end_idx = len(r) - 1
-        st.session_state.trim_start_idx = min(st.session_state.trim_start_idx, len(r) - 2)
-        st.session_state.trim_end_idx = min(st.session_state.trim_end_idx, len(r) - 1)
         trim_result = route_map(
             map_points(r), mode="trim",
             start_index=st.session_state.trim_start_idx,
             end_index=st.session_state.trim_end_idx,
             key=f"trim-map-{st.session_state.trim_revision}",
         )
-        if isinstance(trim_result, dict) and trim_result.get("type") == "trim":
-            start_idx = int(trim_result["start_index"])
-            end_idx = int(trim_result["end_index"])
-            if (start_idx, end_idx) != (st.session_state.trim_start_idx, st.session_state.trim_end_idx):
-                st.session_state.trim_start_idx = start_idx
-                st.session_state.trim_end_idx = end_idx
-                st.session_state.trim_revision += 1
-                st.rerun()
-
         trimmed_preview = r.iloc[
             st.session_state.trim_start_idx:st.session_state.trim_end_idx + 1
         ]
@@ -479,40 +849,59 @@ with st.container(border=True):
             f"{trimmed_preview['t'].iloc[-1] - trimmed_preview['t'].iloc[0]:.0f}s, "
             f"{trimmed_preview['distance'].iloc[-1] - trimmed_preview['distance'].iloc[0]:.0f} m"
         )
-        if st.button("Confirm trim and continue", disabled=len(trimmed_preview) < 2):
+        if st.button(
+            "Confirm trim and continue",
+            disabled=len(trimmed_preview) < 2,
+            key="confirm_trim_in_map",
+        ):
             st.session_state.trimmed_df = trimmed_preview.reset_index(drop=True)
             st.session_state.trim_confirmed = True
             st.session_state.start_finish = None
             st.session_state.start_finish_confirmed = False
             st.session_state.features = []
             st.rerun()
-    else:
-        trimmed_preview = st.session_state.trimmed_df
-        st.success(
-            f"Trim confirmed: {len(trimmed_preview)} GPS points, "
-            f"{trimmed_preview['t'].iloc[-1] - trimmed_preview['t'].iloc[0]:.0f}s."
-        )
-        if st.button("Adjust trim"):
-            st.session_state.trim_confirmed = False
-            st.session_state.start_finish = None
-            st.session_state.start_finish_confirmed = False
-            st.session_state.features = []
-            st.session_state.feature_start_index = None
-            st.session_state.feature_end_index = None
+    if isinstance(trim_result, dict) and trim_result.get("type") == "trim":
+        start_idx = int(trim_result["start_index"])
+        end_idx = int(trim_result["end_index"])
+        if (start_idx, end_idx) != (
+            st.session_state.trim_start_idx, st.session_state.trim_end_idx,
+        ):
+            st.session_state.trim_start_idx = start_idx
+            st.session_state.trim_end_idx = end_idx
+            st.session_state.trim_revision += 1
             st.rerun()
+
+else:
+    trimmed_preview = st.session_state.trimmed_df
 
 # --------------------------------------------------------------------------
 # Step 2: confirm the lap start/finish point
 # --------------------------------------------------------------------------
 
 if not st.session_state.trim_confirmed:
+    render_comparison_placeholder()
     st.stop()
 
 trimmed = st.session_state.trimmed_df
-with st.container(border=True):
-    st.header("2. Confirm the lap start/finish point")
-    if not st.session_state.start_finish_confirmed:
-        st.caption("Click the route where each lap crosses the timing line, then confirm the marker.")
+if not st.session_state.start_finish_confirmed:
+    with map_slot.container(border=True):
+        st.header("Set lap start/finish")
+        st.caption(
+            "Zoom in on the timing line if two course sections are close. "
+            "Use a smaller detection radius to avoid catching the nearby section."
+        )
+        st.slider(
+            "Start/finish detection radius",
+            min_value=2,
+            max_value=20,
+            step=1,
+            key="gate_radius_m",
+            help=(
+                "Reduce this when another part of the course passes close to "
+                "the timing point. Increase it if GPS drift makes crossings miss."
+            ),
+            format="%d m",
+        )
         gate_markers = []
         if st.session_state.start_finish:
             gate_markers.append({
@@ -523,57 +912,47 @@ with st.container(border=True):
             map_points(trimmed), mode="click", markers=gate_markers,
             key=f"gate-map-{st.session_state.map_revision}",
         )
-        if isinstance(gate_result, dict) and gate_result.get("type") == "point":
-            point = trimmed.iloc[int(gate_result["index"])]
-            st.session_state.start_finish = (float(point["x"]), float(point["y"]))
-            st.session_state.start_finish_confirmed = False
-            st.session_state.map_revision += 1
-            st.rerun()
-
         if st.session_state.start_finish:
-            st.write("Lap timing point selected.")
-            if st.button("Confirm start/finish"):
+            st.caption("Timing point selected.")
+            if st.button("Confirm start/finish", key="confirm_start_finish_in_map"):
                 st.session_state.start_finish_confirmed = True
                 st.session_state.map_revision += 1
                 st.rerun()
-    else:
-        st.success("Lap start/finish point confirmed.")
-        if st.button("Change start/finish point"):
-            st.session_state.start_finish_confirmed = False
-            st.session_state.map_revision += 1
-            st.rerun()
+    if isinstance(gate_result, dict) and gate_result.get("type") == "point":
+        point = trimmed.iloc[int(gate_result["index"])]
+        st.session_state.start_finish = (float(point["x"]), float(point["y"]))
+        st.session_state.start_finish_confirmed = False
+        st.session_state.map_revision += 1
+        st.rerun()
 if not st.session_state.start_finish_confirmed:
+    render_comparison_placeholder()
     st.info("Select and confirm the lap start/finish point to continue.")
     st.stop()
 
 # --------------------------------------------------------------------------
-# Step 3: detect laps and build a single reference lap
+# Detect laps and build a single reference lap
 # --------------------------------------------------------------------------
 
-with st.container(border=True):
-    st.header("3. Detect laps")
-    st.caption(
-        f"Using fixed lap detection values for now: a {GATE_RADIUS_M} m timing "
-        f"radius and at least {MIN_LAP_GAP_S} seconds between crossings."
+gx, gy = st.session_state.start_finish
+passes = fu.find_gate_passes(
+    trimmed, gx, gy, radius=st.session_state.gate_radius_m,
+    min_gap_s=MIN_LAP_GAP_S,
+)
+if len(passes) < 3:
+    st.error(
+        f"Only found {len(passes)} crossing(s) of the start/finish point. "
+        "Check that the start/finish marker is on the route and the trimmed "
+        "ride covers multiple laps. Lap detection currently uses fixed settings."
     )
-    gx, gy = st.session_state.start_finish
-    passes = fu.find_gate_passes(
-        trimmed, gx, gy, radius=GATE_RADIUS_M, min_gap_s=MIN_LAP_GAP_S,
-    )
-    if len(passes) < 3:
-        st.error(
-            f"Only found {len(passes)} crossing(s) of the start/finish point. "
-            "Check that the start/finish marker is on the route and the trimmed "
-            "ride covers multiple laps. Lap detection currently uses fixed settings."
-        )
-        st.stop()
+    render_comparison_placeholder()
+    st.stop()
 
-    laps = fu.filter_short_laps(fu.split_laps(trimmed, passes))
-    if len(laps) < 2:
-        st.error("Not enough complete laps found. Adjust the course trim or start/finish marker.")
-        st.stop()
+laps = fu.filter_short_laps(fu.split_laps(trimmed, passes))
+if len(laps) < 2:
+    st.error("Not enough complete laps found. Adjust the course trim or start/finish marker.")
+    render_comparison_placeholder()
+    st.stop()
 
-st.success(f"Found {len(laps)} complete laps. Features will be marked on one reference lap.")
 grid, rx, ry, L = fu.build_reference_path(laps)
 profs = fu.all_profiles(laps, grid, "mph")
 st.session_state.laps, st.session_state.grid = laps, grid
@@ -581,29 +960,17 @@ st.session_state.rx, st.session_state.ry, st.session_state.L = rx, ry, L
 st.session_state.profs = profs
 
 # --------------------------------------------------------------------------
-# Step 4: mark feature areas on a single course lap
+# Step 4: mark feature areas on the shared primary map
 # --------------------------------------------------------------------------
 
-with st.container(border=True):
-    st.header("4. Mark feature areas")
-    st.caption(
-        "This is one reference lap, not the full recording. Choose a feature type, "
-        "then click its start and end points in the direction of travel, and confirm "
-        "the feature before starting another. Short "
-        "segments stay local to this single lap. Route color shifts from slate/olive "
-        "for slower speed to red for faster speed."
-    )
-    name_col, confirm_col, add_feature_col = st.columns([4, 1.2, 1.6])
-    with name_col:
-        st.text_input(
-            "Feature type (reuse the same type to compare similar features)",
-            key="feature_type",
-            placeholder="e.g. Barrier, Sand, Corner",
-        )
 feature_markers = []
 feature_segments = []
+feature_intervals = []
+feature_positions = []
 for feature in st.session_state.features:
     start_m, end_m = feature_course_interval(feature, grid, rx, ry)
+    feature_intervals.append((start_m, end_m))
+    feature_positions.append((feature["name"], start_m, end_m))
     feature_start = course_position_index(start_m, grid, L)
     feature_end = course_position_index(end_m, grid, L)
     feature_segments.append({"start_index": feature_start, "end_index": feature_end})
@@ -620,19 +987,86 @@ if st.session_state.feature_start_index is not None and st.session_state.feature
         "start_index": st.session_state.feature_start_index,
         "end_index": st.session_state.feature_end_index,
     })
-
-feature_result = route_map(
-    [[float(x), float(y), float(pos)] for x, y, pos in zip(rx, ry, grid)]
-    + [[float(rx[0]), float(ry[0]), float(L)]],
-    mode="click" if st.session_state.feature_editing else "view",
-    markers=feature_markers,
-    segments=feature_segments,
-    point_colors=speed_point_colors(
-        np.concatenate((profs.mean(axis=0), profs.mean(axis=0)[:1])),
-        SPEED_GREEN_TO_RED,
-    ),
-    key=f"feature-map-{st.session_state.map_revision}",
+corner_positions = detect_ride1_corners(
+    grid, profs, L, feature_intervals,
 )
+feature_markers.extend(
+    {"index": index, "label": f"C{number}", "color": "#2F2C88"}
+    for number, (index, _) in enumerate(corner_positions, start=1)
+)
+
+feature_result = None
+with map_slot.container(border=True):
+    st.header("Mark feature areas" if st.session_state.feature_editing else "Ride 1 course map")
+    st.caption("Lap start/finish point confirmed.")
+    if st.button("Change start/finish point", key="change_start_finish_in_map"):
+        st.session_state.start_finish_confirmed = False
+        st.session_state.map_revision += 1
+        st.rerun()
+    if st.session_state.feature_editing:
+        st.caption(
+            "Click the start and end of each feature in the direction of travel. "
+            "Confirm the feature here; blank names are numbered automatically."
+        )
+        st.text_input(
+            "Feature type (reuse types to compare similar features)",
+            key="feature_type",
+            placeholder="e.g. Barrier, Sand, Corner",
+        )
+    else:
+        st.caption("Speed-colored Ride 1 map. Add another feature from this map.")
+    feature_result = route_map(
+        [[float(x), float(y), float(pos)] for x, y, pos in zip(rx, ry, grid)]
+        + [[float(rx[0]), float(ry[0]), float(L)]],
+        mode="click" if st.session_state.feature_editing else "view",
+        markers=feature_markers,
+        segments=feature_segments,
+        point_colors=speed_point_colors(
+            np.concatenate((profs.mean(axis=0), profs.mean(axis=0)[:1])),
+            SPEED_RED_TO_GREEN,
+        ),
+        key=f"feature-map-{st.session_state.map_revision}",
+    )
+    control_col, secondary_col = st.columns([1, 1])
+    if st.session_state.feature_editing:
+        if control_col.button(
+            "Confirm feature",
+            disabled=(
+                st.session_state.feature_start_index is None
+                or st.session_state.feature_end_index is None
+            ),
+            key="confirm_feature_in_map",
+            help="Confirm the selected feature area; a name is generated if the name field is blank.",
+        ):
+            start_index = st.session_state.feature_start_index
+            end_index = st.session_state.feature_end_index
+            feature_name = st.session_state.feature_type.strip()
+            if not feature_name:
+                feature_name = next_default_feature_name(st.session_state.features)
+            st.session_state.features.append(dict(
+                name=feature_name,
+                start_m=float(grid[start_index]) if start_index < len(grid) else float(L),
+                end_m=float(grid[end_index]) if end_index < len(grid) else float(L),
+            ))
+            st.session_state.feature_start_index = None
+            st.session_state.feature_end_index = None
+            st.session_state.feature_editing = False
+            st.session_state.map_revision += 1
+            st.rerun()
+        if st.session_state.feature_start_index is not None:
+            if secondary_col.button(
+                "Clear selected points", key="clear_feature_points_in_map",
+            ):
+                st.session_state.feature_start_index = None
+                st.session_state.feature_end_index = None
+                st.session_state.map_revision += 1
+                st.rerun()
+    elif control_col.button("Add new feature", key="add_feature_in_map"):
+        st.session_state.feature_editing = True
+        st.session_state.feature_start_index = None
+        st.session_state.feature_end_index = None
+        st.session_state.map_revision += 1
+        st.rerun()
 if (
     st.session_state.feature_editing
     and isinstance(feature_result, dict)
@@ -645,148 +1079,19 @@ if (
         st.session_state.feature_end_index = point_index
     st.session_state.map_revision += 1
     st.rerun()
-
-with confirm_col:
-    if st.button(
-        "Confirm",
-        disabled=(
-            not st.session_state.feature_editing
-            or st.session_state.feature_start_index is None
-            or st.session_state.feature_end_index is None
-        ),
-        key="confirm_feature",
-        help="Confirm the selected feature area; a name is generated if the name field is blank.",
-    ):
-        start_index = st.session_state.feature_start_index
-        end_index = st.session_state.feature_end_index
-        feature_name = st.session_state.feature_type.strip()
-        if not feature_name:
-            feature_name = next_default_feature_name(st.session_state.features)
-        st.session_state.features.append(dict(
-            name=feature_name,
-            start_m=float(grid[start_index]) if start_index < len(grid) else float(L),
-            end_m=float(grid[end_index]) if end_index < len(grid) else float(L),
-        ))
-        st.session_state.feature_start_index = None
-        st.session_state.feature_end_index = None
-        st.session_state.feature_editing = False
-        st.session_state.map_revision += 1
-        st.rerun()
-
-with add_feature_col:
-    if st.button(
-        "Add new feature",
-        disabled=st.session_state.feature_editing,
-        key="add_new_feature",
-        help="Start marking another feature area.",
-    ):
-        st.session_state.feature_editing = True
-        st.session_state.feature_start_index = None
-        st.session_state.feature_end_index = None
-        st.session_state.map_revision += 1
-        st.rerun()
-if (
-    st.session_state.feature_editing
-    and st.session_state.feature_start_index is not None
-):
-    if st.button("Clear current feature endpoints"):
-        st.session_state.feature_start_index = None
-        st.session_state.feature_end_index = None
-        st.session_state.map_revision += 1
-        st.rerun()
-
-if st.session_state.features:
-    st.write("Marked feature areas:")
-    for i, feature in enumerate(st.session_state.features):
-        c1, c2 = st.columns([5, 1])
-        c1.write(f"**{feature['name']}** — start and end marked")
-        if c2.button("remove", key=f"rm_feature_{i}"):
-            st.session_state.features.pop(i)
-            st.rerun()
-
-save_col1, save_col2 = st.columns([3, 1])
-with save_col1:
-    st.session_state.course_name = st.text_input(
-        "Course name (to save this marking for next time)",
-        value=st.session_state.course_name, placeholder="e.g. Humboldt Park loop",
-    )
-with save_col2:
-    if st.button("Save course"):
-        if st.session_state.course_name:
-            save_course(st.session_state.course_name, st.session_state.start_finish,
-                        st.session_state.features,
-                        origin={"lat": st.session_state.lat0, "lon": st.session_state.lon0})
-            st.success(f"Saved as '{st.session_state.course_name}'.")
-        else:
-            st.warning("Name the course before saving.")
-
-saved = list_saved_courses()
-col_saved, col_upload = st.columns(2)
-with col_saved:
-    if saved:
-        pick = st.selectbox("Load a saved course", ["(none)"] + saved)
-        if pick != "(none)" and st.button("Load saved course"):
-            course = load_course(pick)
-            st.session_state.start_finish, st.session_state.features = normalize_course(
-                course,
-                source_origin={"lat": st.session_state.lat0, "lon": st.session_state.lon0},
-                target_origin={"lat": st.session_state.lat0, "lon": st.session_state.lon0},
-            )
-            st.session_state.start_finish_confirmed = True
-            st.session_state.course_name = pick
-            st.session_state.feature_editing = False
-            st.session_state.feature_start_index = None
-            st.session_state.feature_end_index = None
-            st.session_state.map_revision += 1
-            st.rerun()
-with col_upload:
-    course_upload = st.file_uploader("Import a course file", type=["json"], key="course_upload")
-    if course_upload is not None:
-        course = json.load(course_upload)
-        st.session_state.start_finish, st.session_state.features = normalize_course(
-            course,
-            source_origin={"lat": st.session_state.lat0, "lon": st.session_state.lon0},
-            target_origin={"lat": st.session_state.lat0, "lon": st.session_state.lon0},
-        )
-        st.session_state.start_finish_confirmed = True
-        st.session_state.course_name = ""
-        st.session_state.feature_editing = False
-        st.session_state.feature_start_index = None
-        st.session_state.feature_end_index = None
-        st.session_state.map_revision += 1
-        st.rerun()
-
-if st.session_state.start_finish_confirmed:
-    st.download_button(
-        "Download this course marking as a file",
-        data=json.dumps(dict(start_finish=st.session_state.start_finish,
-                             features=st.session_state.features,
-                             origin={"lat": st.session_state.lat0,
-                                     "lon": st.session_state.lon0}), indent=2),
-        file_name=f"{st.session_state.course_name or 'course'}.json",
-        mime="application/json",
-    )
-
 # --------------------------------------------------------------------------
-# Step 5: run the analysis
+# Run the analysis
 # --------------------------------------------------------------------------
 
-st.header("5. Analysis")
-with st.container(border=True):
-    st.subheader(f"{len(laps)} laps found")
-    st.dataframe(fu.lap_summary(laps), use_container_width=False)
-    st.caption(f"Course length (reference lap): {L:.0f} m")
+primary_lap_summary = fu.lap_summary(laps)
 
 # --- feature stats ---
 feature_samples = {}
 feature_power_samples = {}
 feature_rows = []
-feature_intervals = []
-feature_positions = []
-for ft in st.session_state.features:
-    start_pos, end_pos = feature_course_interval(ft, grid, rx, ry)
-    feature_intervals.append((start_pos, end_pos))
-    feature_positions.append((ft["name"], start_pos, end_pos))
+for ft, (_, start_pos, end_pos) in zip(
+    st.session_state.features, feature_positions,
+):
     timings = fu.feature_lap_times(laps, start_pos, end_pos, L)
     if timings:
         feature_samples.setdefault(ft["name"], []).extend(timings)
@@ -805,48 +1110,114 @@ for feature_type, timings in feature_samples.items():
         if feature_type in feature_power_samples else None,
     ))
 
-if feature_rows:
-    with st.container(border=True):
-        st.subheader("Feature times and power by type")
-        st.caption(
-            "Each marked area is timed from its start point to its end point on every lap. "
-            "Times are grouped by feature type; average watts show effort through that area. "
-            "Feature areas are excluded from cornering retention."
-        )
-        st.dataframe(pd.DataFrame(feature_rows), use_container_width=False)
-
 # --- course-independent cornering number ---
 ret = fu.corner_retention(
     laps, excluded_intervals=feature_intervals, course_length=L,
 )
-with st.container(border=True):
-    st.subheader("Cornering retention (comparable across different courses)")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Speed retained through corners", f"{ret['retained_ratio']*100:.0f}%" if ret["retained_ratio"] == ret["retained_ratio"] else "n/a")
-    c2.metric("Avg entry speed", f"{ret['entry_mph']:.1f} mph")
-    c3.metric("Avg apex speed", f"{ret['apex_mph']:.1f} mph")
-    c4.metric("Cadence at apex", f"{ret['cadence_apex']:.0f} rpm")
-    c5.metric("Power after corner", f"{ret['power_after']:.0f} W" if np.isfinite(ret["power_after"]) else "n/a")
-    st.caption(
-        "'Retained' = apex speed ÷ entry speed, averaged over every slow point found "
-        "on every lap. Because it's a ratio rather than a raw speed, it travels better "
-        "across different courses than mph does, so you can compare this number "
-        "session to session even when the course changes."
+ride1_slot.empty()
+with ride1_slot.container(border=True):
+    st.subheader(f"Ride 1 · {ride_1_name}")
+    st.caption(f"{len(laps)} laps · {L:.0f} m reference lap")
+    metric_row_one = st.columns(2)
+    metric_row_one[0].metric(
+        "Speed retained through corners",
+        f"{ret['retained_ratio'] * 100:.0f}%"
+        if np.isfinite(ret["retained_ratio"]) else "n/a",
     )
+    metric_row_one[1].metric(
+        "Power after corner",
+        f"{ret['power_after']:.0f} W"
+        if np.isfinite(ret["power_after"]) else "n/a",
+    )
+    metric_row_two = st.columns(2)
+    metric_row_two[0].metric(
+        "Average entry speed",
+        f"{ret['entry_mph']:.1f} mph"
+        if np.isfinite(ret["entry_mph"]) else "n/a",
+    )
+    metric_row_two[1].metric(
+        "Average apex speed",
+        f"{ret['apex_mph']:.1f} mph"
+        if np.isfinite(ret["apex_mph"]) else "n/a",
+    )
+    st.caption(
+        "Power after corner is the average over the 8-second recovery after "
+        "detected corner apexes. Retention compares apex to entry speed."
+    )
+    st.markdown("**Lap data**")
+    lap_display = primary_lap_summary[[
+        "lap", "duration_s", "avg_mph", "avg_power",
+    ]].rename(columns={
+        "lap": "Lap", "duration_s": "Time (s)",
+        "avg_mph": "Speed", "avg_power": "Power (W)",
+    })
+    st.dataframe(lap_display, hide_index=True, use_container_width=True)
+    corner_speed_display = ride1_corner_speed_table(
+        grid, profs, L, corner_positions,
+    )
+    if len(corner_speed_display.columns) > 1:
+        st.markdown("**Corner speed by lap · Ride 1**")
+        st.caption(
+            "Each corner is a detected speed minimum on the reference lap. "
+            "Values are the minimum speed within 20 m of that point; marked "
+            "feature areas are excluded."
+        )
+        st.dataframe(
+            corner_speed_display, hide_index=True, use_container_width=True,
+        )
+    else:
+        st.caption("No additional corner speed points were detected outside marked features.")
+    if feature_rows:
+        st.markdown("**Feature data**")
+        st.dataframe(pd.DataFrame(feature_rows), hide_index=True, use_container_width=True)
 
 # --- compare another race on this course ---
-st.subheader("Compare another race on this course")
 comparison_map_data = None
 ride_1_name = st.session_state.ride_1_filename or "Ride 1"
-comparison_upload = st.file_uploader(
-    "Upload another .fit file to compare",
-    type=["fit"],
-    key="comparison_fit_upload",
-    help="The confirmed course start/finish and feature areas will be reused for this ride.",
-)
+mean_prof = profs.mean(0)
+with st.container(border=True):
+    st.subheader("Compare rides")
+    st.caption(
+        "Ride 1 is shown on the left. Upload a second FIT file on the right "
+        "to compare maps, lap data, power, and features."
+    )
+    compare_map_cols = st.columns(2, gap="medium")
+    with compare_map_cols[0].container(border=True):
+        st.markdown(f"**Ride 1 · {ride_1_name}**")
+        primary_map_slot = st.empty()
+        primary_map_slot.plotly_chart(
+            course_speed_figure(
+                rx, ry, mean_prof, SPEED_RED_TO_GREEN, "Ride 1",
+                float(np.nanmin(mean_prof)), float(np.nanmax(mean_prof)),
+                feature_positions, grid, L, corner_positions,
+            ),
+            use_container_width=True,
+            config={"scrollZoom": True, "displayModeBar": True},
+            key="ride1-comparison-map-initial",
+        )
+    with compare_map_cols[1].container(border=True):
+        st.markdown("**Ride 2**")
+        comparison_map_slot = st.empty()
+        comparison_map_slot.markdown(
+            '<div class="cx-comparison-placeholder">'
+            'Upload a FIT file to compare</div>',
+            unsafe_allow_html=True,
+        )
+        comparison_upload = st.file_uploader(
+            "Upload second FIT file",
+            type=["fit"],
+            key="comparison_fit_upload",
+            help="The confirmed course start/finish and feature areas will be reused.",
+        )
 if comparison_upload is not None:
+    st.session_state.comparison_upload_data = comparison_upload.getvalue()
+    st.session_state.comparison_upload_name = comparison_upload.name
+
+comparison_upload_data = st.session_state.get("comparison_upload_data")
+comparison_upload_name = st.session_state.get("comparison_upload_name")
+if comparison_upload_data is not None:
     try:
-        comparison_raw, _comparison_laps_fit = fu.parse_fit(comparison_upload.getvalue())
+        comparison_raw, _comparison_laps_fit = fu.parse_fit(comparison_upload_data)
     except Exception as exc:
         st.error(f"Couldn't read the comparison file: {exc}")
         comparison_raw = None
@@ -866,7 +1237,7 @@ if comparison_upload is not None:
         )
         comparison_passes = fu.find_gate_passes(
             comparison_raw, comparison_gate_x, comparison_gate_y,
-            radius=GATE_RADIUS_M, min_gap_s=MIN_LAP_GAP_S,
+            radius=st.session_state.gate_radius_m, min_gap_s=MIN_LAP_GAP_S,
         )
         if len(comparison_passes) < 3:
             st.error(
@@ -985,7 +1356,7 @@ if comparison_upload is not None:
                 with st.container(border=True):
                     st.subheader("Race summary")
                     st.caption(
-                        f"Ride 1: {ride_1_name} · Ride 2: {comparison_upload.name}"
+                        f"Ride 1: {ride_1_name} · Ride 2: {comparison_upload_name}"
                     )
                     st.dataframe(
                         style_ride_comparison(
@@ -1041,7 +1412,7 @@ if comparison_upload is not None:
                 with st.container(border=True):
                     st.subheader("Lap-by-lap comparison")
                     st.caption(
-                        f"R1: {ride_1_name} · R2: {comparison_upload.name} · "
+                        f"R1: {ride_1_name} · R2: {comparison_upload_name} · "
                         "Delta = Ride 2 minus Ride 1."
                     )
                     st.dataframe(
@@ -1087,7 +1458,7 @@ if comparison_upload is not None:
                     feature_comparison_frame = pd.DataFrame(feature_comparison_rows)
                     with st.container(border=True):
                         st.subheader("Feature times by type")
-                        st.caption(f"R1: {ride_1_name} · R2: {comparison_upload.name}")
+                        st.caption(f"R1: {ride_1_name} · R2: {comparison_upload_name}")
                         st.dataframe(
                             style_ride_comparison(
                                 feature_comparison_frame,
@@ -1252,121 +1623,41 @@ if comparison_upload is not None:
                 comparison_map_data = (
                     comparison_grid, comparison_rx, comparison_ry,
                     comparison_speed_profile, comparison_mean_power_profile,
-                    comparison_length, comparison_upload.name,
+                    comparison_length, comparison_upload_name,
                 )
 
-# --- course map colored by speed ---
-st.subheader("Course map — speed gradient")
-mean_prof = profs.mean(0)
+# --- comparison maps ---
 if comparison_map_data:
     (comparison_grid, comparison_rx, comparison_ry, comparison_mean_speed,
      comparison_mean_power, comparison_length, comparison_name) = comparison_map_data
     color_min = float(min(np.nanmin(mean_prof), np.nanmin(comparison_mean_speed)))
     color_max = float(max(np.nanmax(mean_prof), np.nanmax(comparison_mean_speed)))
-    st.caption(
-        "Line color is speed (mph). Ride 1 uses slate-to-olive-to-red; "
-        "Ride 2 uses slate-to-indigo-to-ink. Both maps share the same speed scale."
-    )
-    map1, map2 = st.columns(2)
-else:
-    color_min, color_max = float(np.nanmin(mean_prof)), float(np.nanmax(mean_prof))
-    st.caption("Line color shifts from slate/olive at slower speeds to red at faster speeds.")
-    map1 = st.container()
-    map2 = None
-
-with map1:
-    st.markdown(f"**Ride 1: {ride_1_name}**")
-    primary_map = go.Figure()
-    primary_route_x, primary_route_y = np.r_[rx, rx[0]], np.r_[ry, ry[0]]
-    add_gradient_route(
-        primary_map, primary_route_x, primary_route_y,
-        np.r_[mean_prof, mean_prof[0]],
-        SPEED_GREEN_TO_RED, "Ride 1", color_min, color_max,
-    )
-    for name, start_pos, end_pos in feature_positions:
-        start_i = course_position_index(start_pos, grid, L)
-        end_i = course_position_index(end_pos, grid, L)
-        if start_i < len(primary_route_x) and end_i < len(primary_route_x):
-            area_indices = (
-                list(range(start_i, end_i + 1)) if end_i >= start_i
-                else list(range(start_i, len(primary_route_x))) + list(range(0, end_i + 1))
-            )
-            primary_map.add_trace(go.Scatter(
-                x=primary_route_x[area_indices], y=primary_route_y[area_indices], mode="lines",
-                line=dict(color="#0F0E2A", width=2, dash="dot"),
-                name=f"{name} feature area", showlegend=False,
-                hovertemplate=f"{name} feature area<extra></extra>",
-            ))
-            for position, label in ((start_pos, f"{name} start"), (end_pos, f"{name} end")):
-                index = course_position_index(position, grid, L)
-                index %= len(rx)
-                if index < len(rx):
-                    primary_map.add_trace(go.Scatter(
-                        x=[rx[index]], y=[ry[index]], mode="markers+text",
-                        marker=dict(size=10, color="#0F0E2A", symbol="circle"),
-                        text=[label], textposition="top center",
-                        showlegend=False, hoverinfo="skip",
-                    ))
-    primary_map.update_layout(
-        height=600, dragmode="pan", yaxis=dict(scaleanchor="x", scaleratio=1),
-        margin=dict(l=10, r=20, t=10, b=10), showlegend=False,
-    )
-    st.plotly_chart(
-        primary_map, use_container_width=True,
+    primary_map_slot.plotly_chart(
+        course_speed_figure(
+            rx, ry, mean_prof, SPEED_RED_TO_GREEN, "Ride 1",
+            color_min, color_max, feature_positions, grid, L,
+            corner_positions,
+        ),
+        use_container_width=True,
         config={"scrollZoom": True, "displayModeBar": True},
+        key="ride1-comparison-map-shared-scale",
     )
-
-if map2 is not None:
-    with map2:
-        st.markdown(f"**Ride 2 — {comparison_name}**")
-        comparison_map = go.Figure()
-        comparison_route_x = np.r_[comparison_rx, comparison_rx[0]]
-        comparison_route_y = np.r_[comparison_ry, comparison_ry[0]]
-        add_gradient_route(
-            comparison_map,
-            comparison_route_x, comparison_route_y,
-            np.r_[comparison_mean_speed, comparison_mean_speed[0]],
-            SPEED_BLUE_TO_PURPLE, "Ride 2", color_min, color_max,
-        )
-        for name, start_pos, end_pos in feature_positions:
-            comp_start = start_pos / L * comparison_length
-            comp_end = end_pos / L * comparison_length
-            start_i = course_position_index(comp_start, comparison_grid, comparison_length)
-            end_i = course_position_index(comp_end, comparison_grid, comparison_length)
-            if start_i < len(comparison_route_x) and end_i < len(comparison_route_x):
-                area_indices = (
-                    list(range(start_i, end_i + 1)) if end_i >= start_i
-                    else list(range(start_i, len(comparison_route_x))) + list(range(0, end_i + 1))
-                )
-                comparison_map.add_trace(go.Scatter(
-                    x=comparison_route_x[area_indices], y=comparison_route_y[area_indices],
-                    mode="lines", line=dict(color="#0F0E2A", width=2, dash="dot"),
-                    name=f"{name} feature area", showlegend=False,
-                    hovertemplate=f"{name} feature area<extra></extra>",
-                ))
-                for position, label in (
-                    (comp_start, f"{name} start"), (comp_end, f"{name} end"),
-                ):
-                    index = course_position_index(
-                        position, comparison_grid, comparison_length,
-                    )
-                    index %= len(comparison_rx)
-                    if index < len(comparison_rx):
-                        comparison_map.add_trace(go.Scatter(
-                            x=[comparison_rx[index]], y=[comparison_ry[index]],
-                            mode="markers+text",
-                            marker=dict(size=10, color="#0F0E2A", symbol="circle"),
-                            text=[label], textposition="top center",
-                            showlegend=False, hoverinfo="skip",
-                        ))
-        comparison_map.update_layout(
-            height=600, dragmode="pan", yaxis=dict(scaleanchor="x", scaleratio=1),
-            margin=dict(l=10, r=20, t=10, b=10), showlegend=False,
-        )
-        st.plotly_chart(
-            comparison_map, use_container_width=True,
-            config={"scrollZoom": True, "displayModeBar": True},
-        )
+    comparison_map_slot.plotly_chart(
+        course_speed_figure(
+            comparison_rx, comparison_ry, comparison_mean_speed,
+            SPEED_RED_TO_GREEN, f"Ride 2 · {comparison_name}",
+            color_min, color_max,
+            [
+                (name, start_pos / L * comparison_length,
+                 end_pos / L * comparison_length)
+                for name, start_pos, end_pos in feature_positions
+            ],
+            comparison_grid, comparison_length,
+        ),
+        use_container_width=True,
+        config={"scrollZoom": True, "displayModeBar": True},
+        key="ride2-comparison-map",
+    )
 
 # --- side-by-side speed and power comparisons ---
 st.subheader("Ride profiles by metric")
@@ -1435,7 +1726,7 @@ else:
 # --------------------------------------------------------------------------
 
 with st.container(border=True):
-    st.header("6. Save this session")
+    st.header("Save this session")
     sess_date = st.date_input("Date of this ride", value=datetime.now().date())
     sess_type = st.selectbox("Type", ["practice", "race"])
     sess_course = st.text_input("Course name for history", value=st.session_state.course_name)

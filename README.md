@@ -28,50 +28,41 @@ The sidebar navigation switches between **Analysis** and **Ride history**.
 
 ## How to use it
 
-1. **Upload a `.fit` file** in the sidebar.
-2. **Trim the ride** by dragging the start and stop handles below the
-   route. Blue **S** and red **E** dots track the endpoints as the route
-   redraws in the browser. Confirm the selected range to continue.
-3. **Mark and confirm the lap start/finish point** by clicking the
-   course route where each lap crosses the timing line.
-4. Lap detection uses fixed settings for now: a 12 m gate radius and a
-   20 second minimum gap between crossings.
-5. **Mark feature areas** on the single reference-lap map (not the full
-   multi-lap recording). Enter a feature type (for example, "Barrier"),
-   then click its start and end in the direction of travel. Short
-   segments stay local to that reference lap. Use the same type for
-   comparable features; click **Confirm** to save each area, then
-   **Add new feature** to mark another. If the name is blank, features receive
-   the next available numbered name. Their times are grouped by type
-   and excluded from cornering retention.
-6. **Save the course** (optional) so you don't have to re-mark it next
-   time you analyze a ride from the same spot. You can also download
-   the course marking as a small `.json` file and re-upload it later,
-   which is the more reliable option once this is hosted somewhere
-   with non-persistent storage (see below).
-7. Scroll down for the lap table, feature times, the retention number,
-   the course map, and the speed chart.
-8. **Add the session to history** if you want to track trends over
-   time. Download the history CSV periodically if you're using the
-   hosted version.
-9. To compare another race on the same course, upload its `.fit` file
-   under **Compare another race on this course**. The confirmed timing
+1. On the Analysis landing page, choose **Upload .fit file** in the
+   center of the placeholder course map. The dashboard switches into
+   the ride workflow after the file loads.
+2. Use the main map in the Analysis page for each setup step: trim the
+   ride, set and confirm the lap start/finish, then mark feature starts
+   and ends. The same map area changes to show the current step, so
+   zooming/panning state and route context stay together.
+3. Set the lap start/finish point. Zoom in if course sections are close,
+   then adjust the detection radius (2–20 m; default 6 m) to avoid
+   selecting a nearby section. Lap detection also requires a 20 second
+   minimum gap between crossings. After laps are detected, mark feature
+   areas on the single reference lap (not the full multi-lap recording):
+   enter a type (for example, "Barrier"), click start and end in the
+   direction of travel, and select **Confirm**. Reuse types for comparable
+   features; blank names are numbered automatically. Feature intervals
+   are timed by type and excluded from cornering/corner-speed detection.
+4. After setup, the main map shows Ride 1's speed-colored course and the
+   panel beside it contains Ride 1 metrics and lap data only, including
+   numbered corner tags that match the Ride 1 lap-by-corner speed table.
+   Scroll down for comparison upload, paired maps, comparison tables,
+   charts, and the written Ride 1/Ride 2 analysis.
+5. **Add the main ride to history** at the bottom of Analysis to track
+   trends over time. Download the history CSV periodically if you're
+   using the hosted version. Ride History shows an overview plus
+   cross-course graphs for corner retention and power after corners.
+6. To compare another race on the same course, upload its `.fit` file
+   in the Ride 2 card below the main map. The confirmed timing
    point and feature areas are reused; lap times, cornering retention,
    average power, and feature times are shown side by side with Ride 2 −
-   Ride 1 differences. Course downloads include their GPS origin so
-   markings can be aligned when loaded for a later ride.
-10. **Add the main ride to history** to save its summary and individual
-    lap duration, speed, power, and cadence for season/career tracking.
-    The comparison ride is intentionally not saved. Download the
-    `history\\sessions.csv` and `history\\lap_history.csv` files as
-    backups; hosted Streamlit disk storage may not persist between restarts.
-    Open **Ride history** from the sidebar to view cross-course progress
-    graphs focused on cornering speed retention and power during the
-    8-second recovery after corner apexes. Other metrics remain stored in
-    the editable history tables. You can restore a CSV backup or explicitly
-    confirm deletion of either local history file.
-    The **Add to history** control remains at the bottom of the analysis
-    page.
+   Ride 1 differences.
+   The comparison ride is not saved. Ride history also stores per-lap
+   speed, power, duration, and cadence; those values remain editable and
+   downloadable even though the progress graphs focus on retention and
+   power out of corners. You can restore a CSV backup or explicitly
+   confirm deletion of either local history file.
 
 Ride-comparison tables place matching Ride 1 and Ride 2 metrics beside
 each other and use compact headers to reduce unnecessary table width.
