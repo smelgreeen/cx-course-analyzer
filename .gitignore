@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+.venv/
+*.fit
+*.FIT
+.streamlit/secrets.toml
+
+# local saved data - don't accidentally publish your (or others') ride data
+courses/*.json
+history/*.csv

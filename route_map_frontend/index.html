@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #0F0E2A; font: 14px system-ui, sans-serif; }
+    .map { height: 480px; border: 1px solid #425F80; border-radius: 8px; overflow: hidden; background: #F8F8FB; }
+    .map { position: relative; }
+    svg { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+    svg.panning { cursor: grabbing; }
+    .map-controls { position: absolute; top: 10px; right: 10px; z-index: 1; display: flex; gap: 4px; }
+    .map-controls button { width: 32px; height: 32px; border: 1px solid #425F80; border-radius: 5px; background: #fff; color: #0F0E2A; font-size: 18px; cursor: pointer; }
+    .map-controls button:hover { background: #F0EFFA; }
+    .route { fill: none; stroke: #425F80; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .speed-segment { stroke-width: 4; stroke-linecap: round; pointer-events: none; }
+    .selected { fill: none; stroke: #2F2C88; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+    .segment { fill: none; stroke: #D74642; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+    .mark { fill: white; stroke-width: 4; }
+    .hint { margin: 8px 0; color: #425F80; }
+    .ranges { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 10px 2px 0; }
+    label { display: block; font-weight: 600; }
+    input { display: block; width: 100%; margin: 8px 0 2px; accent-color: #2F2C88; }
+    output { color: #425F80; font-size: 12px; font-weight: 400; }
+    .clickable { cursor: crosshair; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const root = document.getElementById("root");
+    let args = null;
+    let svg = null;
+    let projected = [];
+    let startInput = null;
+    let endInput = null;
+    let startOutput = null;
+    let endOutput = null;
+    let viewBox = {x: 0, y: 0, width: 900, height: 500};
+    let mapSignature = null;
+    let panStart = null;
+    let justPanned = false;
+
+    function send(type, value) {
+      const message = {isStreamlitMessage: true, type};
+      if (type === "streamlit:componentReady") message.apiVersion = 1;
+      if (type === "streamlit:setFrameHeight") message.height = value;
+      if (type === "streamlit:setComponentValue") {
+        message.value = value;
+        message.dataType = "json";
+      }
+      window.parent.postMessage(message, "*");
+    }
+
+    function project(points) {
+      const width = 900, height = 500, padding = 34;
+      let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+      points.forEach(p => {
+        xmin = Math.min(xmin, p[0]); xmax = Math.max(xmax, p[0]);
+        ymin = Math.min(ymin, p[1]); ymax = Math.max(ymax, p[1]);
+      });
+      if (xmax === xmin) { xmin -= 1; xmax += 1; }
+      if (ymax === ymin) { ymin -= 1; ymax += 1; }
+      const scale = Math.min((width - 2 * padding) / (xmax - xmin), (height - 2 * padding) / (ymax - ymin));
+      const midx = (xmin + xmax) / 2, midy = (ymin + ymax) / 2;
+      return points.map(p => [width / 2 + (p[0] - midx) * scale, height / 2 - (p[1] - midy) * scale]);
+    }
+
+    function pathFor(from, to) {
+      const coords = projected.slice(from, to + 1);
+      if (!coords.length) return "";
+      return coords.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+    }
+
+    function updateViewBox() {
+      if (!svg) return;
+      svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
+      scaleTrimMarkers();
+    }
+
+    function scaleTrimMarkers() {
+      if (!svg || args.mode !== "trim") return;
+      const scale = viewBox.width / 900;
+      svg.querySelectorAll(".trim-marker").forEach(marker => {
+        marker.setAttribute("r", Number(marker.dataset.baseRadius) * scale);
+        marker.setAttribute("stroke-width", 4 * scale);
+      });
+      svg.querySelectorAll(".trim-label").forEach(label => {
+        label.setAttribute("y", label.dataset.baseCenterY);
+        label.setAttribute("dy", 4 * scale);
+        label.setAttribute("font-size", 10 * scale);
+      });
+    }
+
+    function zoomAt(factor, x = viewBox.x + viewBox.width / 2, y = viewBox.y + viewBox.height / 2) {
+      const width = Math.max(90, Math.min(900, viewBox.width * factor));
+      const height = Math.max(50, Math.min(500, viewBox.height * factor));
+      const xRatio = (x - viewBox.x) / viewBox.width;
+      const yRatio = (y - viewBox.y) / viewBox.height;
+      viewBox = {
+        x: x - xRatio * width,
+        y: y - yRatio * height,
+        width,
+        height
+      };
+      updateViewBox();
+    }
+
+    function drawRoute() {
+      if (!svg || !args) return;
+      const a = args.mode === "trim" ? Number(startInput.value) : 0;
+      const b = args.mode === "trim" ? Number(endInput.value) : args.points.length - 1;
+      const base = svg.querySelector(".route");
+      const colored = args.mode !== "trim" && args.point_colors && args.point_colors.length === projected.length;
+      base.setAttribute("d", colored ? "" : pathFor(a, b));
+      svg.querySelectorAll(".speed-segment").forEach(el => el.remove());
+      svg.querySelectorAll(".selected").forEach(el => el.remove());
+      svg.querySelectorAll(".segment").forEach(el => el.remove());
+      svg.querySelectorAll(".mark").forEach(el => el.remove());
+      svg.querySelectorAll(".trim-label").forEach(el => el.remove());
+
+      if (colored) {
+        const end = args.mode === "trim" ? b : projected.length - 1;
+        const start = args.mode === "trim" ? a : 0;
+        for (let i = start; i < end; i++) {
+          const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+          line.setAttribute("x1", projected[i][0]); line.setAttribute("y1", projected[i][1]);
+          line.setAttribute("x2", projected[i + 1][0]); line.setAttribute("y2", projected[i + 1][1]);
+          line.setAttribute("class", "speed-segment");
+          line.setAttribute("stroke", args.point_colors[i]);
+          svg.appendChild(line);
+        }
+      }
+
+      (args.segments || []).forEach(segment => {
+        const from = Number(segment.start_index), to = Number(segment.end_index);
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("class", "segment");
+        const firstPart = pathFor(from, to >= from ? to : projected.length - 1);
+        const secondPart = to < from ? pathFor(0, to).replace(/^M/, "M") : "";
+        path.setAttribute("d", `${firstPart} ${secondPart}`);
+        svg.appendChild(path);
+      });
+      (args.markers || []).forEach(marker => {
+        const index = Math.max(0, Math.min(projected.length - 1, Number(marker.index)));
+        const [cx, cy] = projected[index];
+        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        circle.setAttribute("cx", cx); circle.setAttribute("cy", cy); circle.setAttribute("r", "8");
+        circle.setAttribute("class", "mark"); circle.setAttribute("stroke", marker.color || "#D74642");
+        svg.appendChild(circle);
+      });
+
+      if (args.mode === "trim") {
+        startOutput.textContent = `${args.points[a][2].toFixed(0)} s`;
+        endOutput.textContent = `${args.points[b][2].toFixed(0)} s`;
+        [
+          {index: a, label: "S", color: "#2F2C88"},
+          {index: b, label: "E", color: "#D74642"}
+        ].forEach(marker => {
+          const [cx, cy] = projected[marker.index];
+          const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("r", "9");
+          dot.dataset.baseRadius = "9";
+          dot.setAttribute("class", "mark trim-marker"); dot.setAttribute("stroke", marker.color);
+          svg.appendChild(dot);
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("x", cx); text.setAttribute("y", cy);
+          text.dataset.baseCenterY = String(cy);
+          text.setAttribute("text-anchor", "middle"); text.setAttribute("font-size", "10");
+          text.setAttribute("font-weight", "700"); text.setAttribute("fill", marker.color);
+          text.setAttribute("pointer-events", "none"); text.setAttribute("class", "trim-label");
+          text.textContent = marker.label;
+          svg.appendChild(text);
+        });
+      }
+      scaleTrimMarkers();
+    }
+
+    function render(nextArgs) {
+      args = nextArgs;
+      if (!args.points || args.points.length < 2) {
+        root.textContent = "Not enough GPS points to display a route.";
+        return;
+      }
+      const nextMapSignature = JSON.stringify([
+        args.mode, args.points.length, args.points[0], args.points[args.points.length - 1]
+      ]);
+      if (nextMapSignature !== mapSignature) {
+        viewBox = {x: 0, y: 0, width: 900, height: 500};
+        mapSignature = nextMapSignature;
+      }
+      projected = project(args.points);
+      const s = Math.max(0, Math.min(projected.length - 2, Number(args.start_index || 0)));
+      const e = Math.max(s + 1, Math.min(projected.length - 1, Number(args.end_index)));
+      root.innerHTML = "";
+
+      const map = document.createElement("div");
+      map.className = "map";
+      svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      updateViewBox();
+      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      if (args.mode === "click") svg.classList.add("clickable");
+      const route = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      route.setAttribute("class", "route");
+      svg.appendChild(route);
+      map.appendChild(svg);
+      const controls = document.createElement("div");
+      controls.className = "map-controls";
+      [
+        ["+", () => zoomAt(0.75), "Zoom in"],
+        ["−", () => zoomAt(1.33), "Zoom out"],
+        ["↺", () => { viewBox = {x: 0, y: 0, width: 900, height: 500}; updateViewBox(); }, "Reset zoom"]
+      ].forEach(([label, action, title]) => {
+        const button = document.createElement("button");
+        button.type = "button"; button.textContent = label; button.title = title;
+        button.setAttribute("aria-label", title);
+        button.addEventListener("click", action);
+        controls.appendChild(button);
+      });
+      map.appendChild(controls);
+      root.appendChild(map);
+
+      svg.addEventListener("wheel", event => {
+        event.preventDefault();
+        const point = svg.createSVGPoint();
+        point.x = event.clientX; point.y = event.clientY;
+        const local = point.matrixTransform(svg.getScreenCTM().inverse());
+        zoomAt(event.deltaY < 0 ? 0.85 : 1.18, local.x, local.y);
+      }, {passive: false});
+      svg.addEventListener("pointerdown", event => {
+        if (event.button !== 0) return;
+        panStart = {
+          pointerId: event.pointerId,
+          pointerX: event.clientX, pointerY: event.clientY,
+          viewX: viewBox.x, viewY: viewBox.y,
+          width: viewBox.width, height: viewBox.height,
+          dragging: false
+        };
+      });
+      svg.addEventListener("pointermove", event => {
+        if (!panStart) return;
+        if (event.pointerId !== panStart.pointerId) return;
+        const deltaX = event.clientX - panStart.pointerX;
+        const deltaY = event.clientY - panStart.pointerY;
+        if (!panStart.dragging && Math.hypot(deltaX, deltaY) < 4) return;
+        if (!panStart.dragging) {
+          panStart.dragging = true;
+          svg.classList.add("panning");
+          svg.setPointerCapture(event.pointerId);
+        }
+        const bounds = svg.getBoundingClientRect();
+        viewBox.x = panStart.viewX - deltaX * panStart.width / bounds.width;
+        viewBox.y = panStart.viewY - deltaY * panStart.height / bounds.height;
+        updateViewBox();
+      });
+      const endPan = event => {
+        if (!panStart || event.pointerId !== panStart.pointerId) return;
+        if (panStart.dragging) {
+          justPanned = true;
+          svg.classList.remove("panning");
+          setTimeout(() => { justPanned = false; }, 0);
+        }
+        panStart = null;
+      };
+      svg.addEventListener("pointerup", endPan);
+      svg.addEventListener("pointercancel", endPan);
+
+      if (args.mode === "trim") {
+        const hint = document.createElement("div");
+        hint.className = "hint";
+        hint.textContent = "Scroll to zoom and drag the map to pan. Drag either handle to trim the ride; the route updates immediately.";
+        root.appendChild(hint);
+        const ranges = document.createElement("div");
+        ranges.className = "ranges";
+        const startLabel = document.createElement("label");
+        startLabel.append("Start ");
+        startOutput = document.createElement("output");
+        startLabel.appendChild(startOutput);
+        startInput = document.createElement("input");
+        startInput.type = "range"; startInput.min = "0"; startInput.max = String(projected.length - 2);
+        startInput.value = String(s); startInput.setAttribute("aria-label", "Trim start");
+        startLabel.appendChild(startInput);
+        const endLabel = document.createElement("label");
+        endLabel.append("Stop ");
+        endOutput = document.createElement("output");
+        endLabel.appendChild(endOutput);
+        endInput = document.createElement("input");
+        endInput.type = "range"; endInput.min = "1"; endInput.max = String(projected.length - 1);
+        endInput.value = String(e); endInput.setAttribute("aria-label", "Trim stop");
+        endLabel.appendChild(endInput);
+        ranges.append(startLabel, endLabel);
+        root.appendChild(ranges);
+
+        startInput.addEventListener("input", () => {
+          if (Number(startInput.value) >= Number(endInput.value)) {
+            startInput.value = String(Number(endInput.value) - 1);
+          }
+          drawRoute();
+        });
+        endInput.addEventListener("input", () => {
+          if (Number(endInput.value) <= Number(startInput.value)) {
+            endInput.value = String(Number(startInput.value) + 1);
+          }
+          drawRoute();
+        });
+        const commit = () => send("streamlit:setComponentValue", {
+          type: "trim", start_index: Number(startInput.value), end_index: Number(endInput.value)
+        });
+        startInput.addEventListener("change", commit);
+        endInput.addEventListener("change", commit);
+      } else if (args.mode === "click") {
+        const hint = document.createElement("div");
+        hint.className = "hint";
+        hint.textContent = "Scroll to zoom, drag to pan, or click the route to place a point.";
+        root.appendChild(hint);
+        svg.addEventListener("click", event => {
+          if (justPanned) return;
+          const point = svg.createSVGPoint();
+          point.x = event.clientX; point.y = event.clientY;
+          const local = point.matrixTransform(svg.getScreenCTM().inverse());
+          let nearest = -1, best = Infinity;
+          projected.forEach((p, i) => {
+            const distance = Math.hypot(p[0] - local.x, p[1] - local.y);
+            if (distance < best) { best = distance; nearest = i; }
+          });
+          if (nearest >= 0 && best < 36) {
+            send("streamlit:setComponentValue", {type: "point", index: nearest});
+          }
+        });
+      } else {
+        const hint = document.createElement("div");
+        hint.className = "hint";
+        hint.textContent = "Scroll to zoom and drag to pan. Feature markings are confirmed; choose “Add new feature” to mark another area.";
+        root.appendChild(hint);
+      }
+      drawRoute();
+      requestAnimationFrame(() => {
+        send("streamlit:setFrameHeight", Math.max(520, document.documentElement.scrollHeight));
+      });
+    }
+
+    window.addEventListener("message", event => {
+      if (event.data.type === "streamlit:render") render(event.data.args);
+    });
+    send("streamlit:componentReady", {apiVersion: 1});
+  </script>
+</body>
+</html>
