@@ -19,11 +19,15 @@ start/finish line and any features (barrier, flyover, hairpin, chicane,
 ## Running it locally
 
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
-Then open the local URL it prints (usually `http://localhost:8501`).
+On Windows, run these commands from the `cxanalyzer` folder in Command
+Prompt or PowerShell. Using `python -m streamlit` launches Streamlit
+through the active Python installation, so the `streamlit` command does
+not need to be on `PATH`. Then open the local URL it prints (usually
+`http://localhost:8501`).
 The sidebar navigation switches between **Analysis** and **Ride history**.
 
 ## How to use it
