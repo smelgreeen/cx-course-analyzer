@@ -10,3 +10,6 @@ venv/
 # local saved data - don't accidentally publish your (or others') ride data
 courses/*.json
 history/*.csv
+
+# Node modules
+node_modules/

@@ -1,0 +1,16 @@
+{
+  "name": "cx-course-analyzer",
+  "version": "0.1.0",
+  "description": "CX Course Analyzer - Cyclocross ride analysis tool",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild analytics.js --bundle --format=esm --outfile=public/analytics.js"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^1.4.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
