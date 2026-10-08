@@ -117,8 +117,8 @@ reusing `fit_utils.py` for FIT parsing and lap analysis. The root
 `pyproject.toml` identifies `api.ride:handler` as the Vercel Python
 entrypoint and declares the runtime dependencies, separate from the local
 Streamlit dependencies in `requirements.txt`. The handler serves
-`index.html` for browser page requests and accepts FIT analysis POSTs at
-the same root entrypoint.
+`index.html` for browser page requests; FIT inspection and analysis are
+sent as POST requests to `/api/ride`.
 
 1. Import this GitHub repository in Vercel and deploy it from the repository
    root. Choose the **Other** framework preset and leave the build command
