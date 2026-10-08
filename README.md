@@ -115,14 +115,15 @@ remains available locally through `python -m streamlit run app.py`. Vercel
 serves the static interface and runs `api/ride.py` as a Python Function,
 reusing `fit_utils.py` for FIT parsing and lap analysis. The root
 `pyproject.toml` identifies `api.ride:handler` as the Vercel Python
-entrypoint so it does not mistake the local Streamlit `app.py` for the
-serverless function.
+entrypoint and declares the runtime dependencies, separate from the local
+Streamlit dependencies in `requirements.txt`.
 
 1. Import this GitHub repository in Vercel and deploy it from the repository
    root. Choose the **Other** framework preset and leave the build command
    empty.
-2. Vercel installs Python packages from `requirements.txt` and publishes
-   `index.html` plus the `/api/ride` function.
+2. Vercel resolves the Python Function dependencies from `pyproject.toml`
+   and publishes `index.html` plus the `/api/ride` function. The project
+   metadata there is required by Vercel's `uv lock` build step.
 3. Open the deployment URL and upload a FIT file to start analysis.
 
 The Vercel interface currently limits FIT uploads to 4 MB to stay below
