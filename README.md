@@ -113,7 +113,10 @@ are grouped by the feature type you entered.
 The root `index.html` is the Vercel-native browser app; the Streamlit app
 remains available locally through `python -m streamlit run app.py`. Vercel
 serves the static interface and runs `api/ride.py` as a Python Function,
-reusing `fit_utils.py` for FIT parsing and lap analysis.
+reusing `fit_utils.py` for FIT parsing and lap analysis. The root
+`pyproject.toml` identifies `api.ride:handler` as the Vercel Python
+entrypoint so it does not mistake the local Streamlit `app.py` for the
+serverless function.
 
 1. Import this GitHub repository in Vercel and deploy it from the repository
    root. Choose the **Other** framework preset and leave the build command
