@@ -120,6 +120,7 @@ st.markdown(
 HISTORY_DIR = "history"
 SESSION_HISTORY_PATH = os.path.join(HISTORY_DIR, "sessions.csv")
 LAP_HISTORY_PATH = os.path.join(HISTORY_DIR, "lap_history.csv")
+CORNER_HISTORY_PATH = os.path.join(HISTORY_DIR, "corner_history.csv")
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
 
@@ -156,6 +157,7 @@ st.caption(
 )
 session_history = load_csv(SESSION_HISTORY_PATH)
 lap_history = load_csv(LAP_HISTORY_PATH)
+corner_history = load_csv(CORNER_HISTORY_PATH)
 
 with st.container(border=True):
     st.header("Season overview")
@@ -285,6 +287,111 @@ with st.container(border=True):
         )
 
 with st.container(border=True):
+    st.header("Corner progress over time")
+    if corner_history.empty:
+        st.info(
+            "No corner history yet. Save a race or practice from Analysis to "
+            "start tracking corner speed and recovery power."
+        )
+    elif not {"course", "corner_id", "date"}.issubset(corner_history.columns):
+        st.warning("Corner history is missing course, corner, or date fields.")
+    else:
+        courses = sorted(
+            corner_history["course"].fillna("Unspecified course")
+            .astype(str).unique(),
+        )
+        selected_course = st.selectbox(
+            "Course", courses, key="corner_history_course",
+        )
+        course_corners = corner_history[
+            corner_history["course"].fillna("Unspecified course").astype(str)
+            == selected_course
+        ].copy()
+        corner_choices = sorted(
+            course_corners["corner_id"].dropna().astype(str).unique(),
+            key=lambda corner: (
+                int(corner[1:]) if corner.startswith("C")
+                and corner[1:].isdigit() else 0
+            ),
+        ) or ["No corner observations"]
+        metric_options = {
+            "Apex speed (mph)": "apex_mph",
+            "Speed retained (%)": "retained_ratio",
+            "Power after corner (W)": "power_after_corner_w",
+        }
+        choice_col, metric_col = st.columns(2)
+        selected_corner = choice_col.selectbox(
+            "Corner", corner_choices, key="corner_history_corner",
+        )
+        selected_metric_label = metric_col.selectbox(
+            "Metric", list(metric_options), key="corner_history_metric",
+        )
+        metric = metric_options[selected_metric_label]
+        trend = course_corners[
+            course_corners["corner_id"].astype(str) == selected_corner
+        ].copy()
+        if selected_corner == "No corner observations":
+            st.info("There are no corner observations saved for this course.")
+        elif metric not in trend:
+            st.info(f"No {selected_metric_label.lower()} is available for this corner.")
+        else:
+            trend["date"] = pd.to_datetime(trend["date"], errors="coerce")
+            trend[metric] = pd.to_numeric(trend[metric], errors="coerce")
+            trend = (
+                trend.dropna(subset=["date", metric])
+                .sort_values("date", kind="stable")
+                .reset_index(drop=True)
+            )
+            if trend.empty:
+                st.info(f"No {selected_metric_label.lower()} is available for this corner.")
+            else:
+                if metric == "retained_ratio":
+                    trend[metric] *= 100
+                hover_fields = [
+                    trend[column].fillna("").astype(str)
+                    if column in trend else pd.Series("", index=trend.index)
+                    for column in ("type", "effort_type", "ride_file")
+                ]
+                chart = go.Figure(go.Scatter(
+                    x=trend["date"],
+                    y=trend[metric],
+                    mode="markers+lines",
+                    marker=dict(
+                        color=[
+                            "#2F2C88" if effort_type == "race lap" else "#D74642"
+                            for effort_type in trend["effort_type"].fillna("")
+                            .astype(str)
+                        ] if "effort_type" in trend else "#2F2C88",
+                        size=9,
+                    ),
+                    line=dict(color="#425F80", width=2),
+                    customdata=pd.concat(hover_fields, axis=1).to_numpy(),
+                    hovertemplate=(
+                        "%{x|%Y-%m-%d}<br>%{y:.1f}"
+                        "<br>Type: %{customdata[0]}"
+                        "<br>Effort: %{customdata[1]}"
+                        "<br>File: %{customdata[2]}<extra></extra>"
+                    ),
+                ))
+                chart.update_layout(
+                    height=320,
+                    title=f"{selected_corner} · {selected_metric_label}",
+                    xaxis_title="Date",
+                    yaxis_title=selected_metric_label,
+                    margin=dict(l=10, r=10, t=45, b=10),
+                )
+                st.plotly_chart(chart, use_container_width=True)
+                st.caption(
+                    "Red points are practice efforts (including partial efforts); "
+                    "indigo points are individual full race laps. Missing corners "
+                    "are omitted rather than counted as zero."
+                )
+        add_history_editor(
+            corner_history, CORNER_HISTORY_PATH, "corner_history",
+            "corner history", "cx_corner_history.csv",
+        )
+
+with st.container(border=True):
     st.header("Per-lap history")
     if lap_history.empty:
         st.info("No saved lap records yet.")
@@ -319,6 +426,16 @@ with st.container(border=True):
             restored.to_csv(LAP_HISTORY_PATH, index=False)
             st.success(f"Restored {len(restored)} per-lap records.")
             st.rerun()
+        corner_upload = st.file_uploader(
+            "Restore corner history CSV", type=["csv"], key="restore_corner_csv",
+        )
+        if corner_upload is not None and st.button(
+            "Restore corner history", key="restore_corner_button",
+        ):
+            restored = pd.read_csv(corner_upload)
+            restored.to_csv(CORNER_HISTORY_PATH, index=False)
+            st.success(f"Restored {len(restored)} corner observations.")
+            st.rerun()
 
     with delete_col:
         st.caption("Deletion permanently removes the selected CSV. Download a backup first.")
@@ -343,4 +460,19 @@ with st.container(border=True):
         ):
             os.remove(LAP_HISTORY_PATH)
             st.success("Deleted per-lap history.")
+            st.rerun()
+        confirm_corner_delete = st.checkbox(
+            "Confirm deleting corner_history.csv",
+            key="confirm_corner_history_delete",
+        )
+        if st.button(
+            "Delete corner history",
+            key="delete_corner_history",
+            disabled=(
+                not confirm_corner_delete
+                or not os.path.exists(CORNER_HISTORY_PATH)
+            ),
+        ):
+            os.remove(CORNER_HISTORY_PATH)
+            st.success("Deleted corner history.")
             st.rerun()

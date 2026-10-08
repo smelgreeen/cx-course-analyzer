@@ -1,0 +1,8 @@
+venv/
+.venv/
+__pycache__/
+.git/
+history/*.csv
+courses/*.json
+*.fit
+*.FIT

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -337,6 +336,11 @@ def init_state():
         feature_start_index=None,
         feature_end_index=None,
         feature_editing=True,
+        corner_editing=False,
+        corner_added_positions=[],
+        corner_removed_positions=[],
+        last_gate_map_event_id=None,
+        last_feature_map_event_id=None,
         map_revision=0,
         gate_radius_m=GATE_RADIUS_M,
         feature_type="",
@@ -459,6 +463,10 @@ def append_history(row: dict):
 def append_lap_history(rows):
     path = os.path.join(HISTORY_DIR, LAP_HISTORY_FILE)
     append_history_rows(path, rows)
+
+
+def append_corner_history(rows):
+    append_history_rows(os.path.join(HISTORY_DIR, "corner_history.csv"), rows)
 
 
 def speed_point_colors(values, colorscale, cmin=None, cmax=None):
@@ -631,15 +639,113 @@ def course_speed_figure(
     return figure
 
 
-def detect_ride1_corners(grid, profiles, course_length, excluded_intervals):
+def detect_ride1_corners(
+    grid, rx, ry, profiles, course_length, excluded_intervals,
+):
     mean_speed = np.nanmean(profiles, axis=0)
     if (
         not len(grid) or not np.isfinite(mean_speed).any()
-        or course_length <= 0
+        or course_length <= 0 or len(rx) != len(grid) or len(ry) != len(grid)
+        or len(grid) < 5
+        or not np.isfinite(rx).all() or not np.isfinite(ry).all()
     ):
         return []
 
-    # Smooth GPS/sample noise without washing out short course features.
+    grid_steps = np.diff(grid)
+    grid_step = float(np.median(grid_steps))
+    if grid_step <= 0 or not np.isfinite(grid_step):
+        return []
+    sample_count = len(grid)
+
+    # Smooth the lap join before using circular differences. The reference
+    # lap's final GPS point may not land exactly on its first point.
+    closing_step = max(0.0, float(course_length - grid[-1]))
+    if len(grid_steps):
+        last_step = float(grid_steps[-1])
+        end_x = rx[-1] + (rx[-1] - rx[-2]) * closing_step / last_step
+        end_y = ry[-1] + (ry[-1] - ry[-2]) * closing_step / last_step
+        seam_blend_m = min(150.0, course_length / 4)
+        progress = np.clip(
+            (grid - (course_length - seam_blend_m)) / seam_blend_m,
+            0.0, 1.0,
+        )
+        smooth_source_x = np.asarray(rx, dtype=float) - progress * (end_x - rx[0])
+        smooth_source_y = np.asarray(ry, dtype=float) - progress * (end_y - ry[0])
+    else:
+        smooth_source_x = np.asarray(rx, dtype=float)
+        smooth_source_y = np.asarray(ry, dtype=float)
+    weights = (1, 2, 3, 2, 1)
+    smooth_x = sum(
+        weight * np.roll(smooth_source_x, offset)
+        for weight, offset in zip(weights, range(-2, 3))
+    ) / sum(weights)
+    smooth_y = sum(
+        weight * np.roll(smooth_source_y, offset)
+        for weight, offset in zip(weights, range(-2, 3))
+    ) / sum(weights)
+
+    # Sum absolute changes in route heading at several scales. Unlike one
+    # long chord angle, this does not cancel opposing turns in an S-bend.
+    segment_x = np.roll(smooth_x, -1) - smooth_x
+    segment_y = np.roll(smooth_y, -1) - smooth_y
+    heading = np.arctan2(segment_y, segment_x)
+    heading_delta = np.arctan2(
+        np.sin(heading - np.roll(heading, 1)),
+        np.cos(heading - np.roll(heading, 1)),
+    )
+    absolute_turn = np.abs(np.degrees(heading_delta))
+    turn_signal = np.zeros(sample_count, dtype=float)
+    window_sizes = sorted({
+        max(3, int(round(distance / grid_step)))
+        for distance in (30, 50, 70)
+    })
+    for window_size in window_sizes:
+        window_size = min(window_size, sample_count - 1)
+        first_offset = -(window_size // 2)
+        window_turn = sum(
+            np.roll(absolute_turn, offset)
+            for offset in range(first_offset, first_offset + window_size)
+        )
+        turn_signal = np.maximum(turn_signal, window_turn)
+
+    candidate_scores = {}
+    for index in range(sample_count):
+        position = float(grid[index])
+        if any(
+            start <= position <= end if start <= end
+            else position >= start or position <= end
+            for start, end in excluded_intervals
+        ):
+            continue
+        if not (
+            turn_signal[index] >= np.roll(turn_signal, 1)[index]
+            and turn_signal[index] >= np.roll(turn_signal, -1)[index]
+            and (
+                turn_signal[index] > np.roll(turn_signal, 1)[index]
+                or turn_signal[index] > np.roll(turn_signal, -1)[index]
+            )
+        ):
+            continue
+        backward = (float(grid[index]) - grid) % course_length
+        forward = (grid - float(grid[index])) % course_length
+        surrounding = turn_signal[
+            ((backward >= 80) & (backward <= 140))
+            | ((forward >= 80) & (forward <= 140))
+        ]
+        turn_prominence = (
+            float(
+                turn_signal[index]
+                - np.nanpercentile(surrounding, 25)
+            )
+            if surrounding.size else float(turn_signal[index])
+        )
+        if turn_signal[index] >= 8 and turn_prominence >= 4:
+            candidate_scores[index] = (
+                float(turn_signal[index]) + turn_prominence
+            )
+
+    # Keep speed-based detection as a second signal for corners that have a
+    # clear speed loss but only a modest geometric change.
     smooth_speed = (
         np.roll(mean_speed, 1) + mean_speed + np.roll(mean_speed, -1)
     ) / 3
@@ -652,8 +758,6 @@ def detect_ride1_corners(grid, profiles, course_length, excluded_intervals):
             | (smooth_speed < np.roll(smooth_speed, -1))
         )
     )
-    median_speed = float(np.nanmedian(smooth_speed))
-    candidates = []
     for index in np.flatnonzero(local_minima):
         position = float(grid[index])
         if any(
@@ -662,32 +766,32 @@ def detect_ride1_corners(grid, profiles, course_length, excluded_intervals):
             for start, end in excluded_intervals
         ):
             continue
-        offsets = (grid - position) % course_length
-        left = smooth_speed[(offsets >= 20) & (offsets <= 80)]
-        right = smooth_speed[
-            ((course_length - offsets) >= 20)
-            & ((course_length - offsets) <= 80)
-        ]
+        backward = (position - grid) % course_length
+        forward = (grid - position) % course_length
+        left = smooth_speed[(backward >= 20) & (backward <= 80)]
+        right = smooth_speed[(forward >= 20) & (forward <= 80)]
         if not left.size or not right.size:
             continue
         surrounding_speed = min(float(np.nanmax(left)), float(np.nanmax(right)))
         prominence = surrounding_speed - float(smooth_speed[index])
-        required_prominence = max(0.9, surrounding_speed * 0.06)
-        if (
-            prominence >= required_prominence
-            and smooth_speed[index] < median_speed - 0.4
-        ):
-            candidates.append((int(index), prominence))
+        required_prominence = max(0.4, surrounding_speed * 0.03)
+        if prominence >= required_prominence:
+            candidate_scores[int(index)] = max(
+                candidate_scores.get(int(index), 0.0),
+                float(turn_signal[index]) + prominence * 5,
+            )
 
-    # Merge nearby minima while keeping the strongest slowdown in each corner.
+    # Merge nearby speed/geometry peaks into one table/map corner label.
     selected = []
-    for index, _ in sorted(candidates, key=lambda item: item[1], reverse=True):
+    for index, _ in sorted(
+        candidate_scores.items(), key=lambda item: item[1], reverse=True,
+    ):
         position = float(grid[index])
         if all(
             min(
                 abs(position - grid[other]),
                 course_length - abs(position - grid[other]),
-            ) >= 25
+            ) >= 30
             for other in selected
         ):
             selected.append(index)
@@ -711,6 +815,174 @@ def ride1_corner_speed_table(
             )
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def merge_corner_positions(
+    grid, course_length, detected, added_positions, removed_positions,
+    excluded_intervals,
+):
+    def is_excluded(position):
+        return any(
+            start <= position <= end if start <= end
+            else position >= start or position <= end
+            for start, end in excluded_intervals
+        )
+
+    corners = [
+        (index, position)
+        for index, position in detected
+        if all(
+            min(abs(position - removed), course_length - abs(position - removed)) > 20
+            for removed in removed_positions
+        )
+    ]
+    for added_position in added_positions:
+        added_position = float(added_position) % course_length
+        if is_excluded(added_position) or any(
+            min(
+                abs(added_position - position),
+                course_length - abs(added_position - position),
+            ) < 20
+            for _, position in corners
+        ):
+            continue
+        added_index = course_position_index(added_position, grid, course_length)
+        corners.append((added_index, float(grid[added_index])))
+    return sorted(corners, key=lambda item: item[1])
+
+
+def split_practice_efforts(frame, rest_threshold_s=30):
+    """Split a practice into moving efforts around sustained stationary rests."""
+    if frame.empty:
+        return []
+    speed = pd.to_numeric(frame["mph"], errors="coerce").fillna(0).to_numpy()
+    times = pd.to_numeric(frame["t"], errors="coerce").to_numpy(dtype=float)
+    x = pd.to_numeric(frame["x"], errors="coerce").to_numpy(dtype=float)
+    y = pd.to_numeric(frame["y"], errors="coerce").to_numpy(dtype=float)
+    stopped = speed <= 1.5
+    stopped_indices = np.flatnonzero(stopped)
+    if not len(stopped_indices):
+        return [frame.reset_index(drop=True)]
+
+    groups = np.split(
+        stopped_indices,
+        np.flatnonzero(np.diff(stopped_indices) > 1) + 1,
+    )
+    rests = []
+    for group in groups:
+        if len(group) < 2 or times[group[-1]] - times[group[0]] < rest_threshold_s:
+            continue
+        displacement = np.hypot(
+            x[group] - x[group[0]], y[group] - y[group[0]],
+        )
+        if np.nanmax(displacement) <= 15:
+            rests.append((int(group[0]), int(group[-1])))
+
+    efforts = []
+    cursor = 0
+    for rest_start, rest_end in rests:
+        if rest_start - cursor >= 2:
+            efforts.append(frame.iloc[cursor:rest_start].reset_index(drop=True))
+        cursor = rest_end + 1
+    if len(frame) - cursor >= 2:
+        efforts.append(frame.iloc[cursor:].reset_index(drop=True))
+    return [effort for effort in efforts if len(effort) >= 3]
+
+
+def corner_history_rows(
+    effort, corners, grid, rx, ry, course_length, metadata,
+    effort_number, effort_type, lap_number=None,
+):
+    """Summarize the covered corner passes for one lap or practice effort."""
+    if effort.empty or not corners:
+        return []
+    if effort_type == "race lap":
+        positions = (
+            pd.to_numeric(effort["distance"], errors="coerce").to_numpy(dtype=float)
+            - float(effort["distance"].iloc[0])
+        ) % course_length
+    else:
+        coordinates = effort[["x", "y"]].to_numpy(dtype=float)
+        positions = np.empty(len(coordinates), dtype=float)
+        for start in range(0, len(coordinates), 500):
+            batch = coordinates[start:start + 500]
+            distances = (
+                (batch[:, None, 0] - rx[None, :]) ** 2
+                + (batch[:, None, 1] - ry[None, :]) ** 2
+            )
+            nearest = np.argmin(distances, axis=1)
+            batch_positions = grid[nearest].astype(float)
+            batch_positions[np.min(distances, axis=1) > 30 ** 2] = np.nan
+            positions[start:start + len(batch)] = batch_positions
+
+    times = pd.to_numeric(effort["t"], errors="coerce").to_numpy(dtype=float)
+    speeds = pd.to_numeric(effort["mph"], errors="coerce").to_numpy(dtype=float)
+    powers = pd.to_numeric(
+        effort.get("power", pd.Series(np.nan, index=effort.index)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    rows = []
+    for corner_number, (_, corner_position) in enumerate(corners, start=1):
+        around_corner = np.minimum(
+            np.abs(positions - corner_position),
+            course_length - np.abs(positions - corner_position),
+        ) <= 20
+        candidate_indices = np.flatnonzero(
+            around_corner & np.isfinite(speeds) & (speeds > 2)
+        )
+        if not len(candidate_indices):
+            continue
+
+        apex_indices = []
+        last_apex_time = -np.inf
+        for index in candidate_indices:
+            previous_speed = speeds[index - 1] if index > 0 else np.inf
+            next_speed = speeds[index + 1] if index + 1 < len(speeds) else np.inf
+            if (
+                speeds[index] <= previous_speed
+                and speeds[index] <= next_speed
+                and times[index] - last_apex_time >= 15
+            ):
+                apex_indices.append(index)
+                last_apex_time = times[index]
+        if not apex_indices:
+            apex_indices = [int(candidate_indices[np.argmin(speeds[candidate_indices])])]
+
+        entry_speeds = []
+        apex_speeds = []
+        retentions = []
+        recovery_powers = []
+        for index in apex_indices:
+            before = (times >= times[index] - 5) & (times < times[index])
+            entry = speeds[before & np.isfinite(speeds)]
+            if len(entry):
+                entry_speeds.append(float(np.max(entry)))
+                retentions.append(float(speeds[index] / np.max(entry)))
+            apex_speeds.append(float(speeds[index]))
+            recovery = (
+                (times >= times[index]) & (times <= times[index] + 8)
+                & np.isfinite(powers)
+            )
+            if recovery.any():
+                recovery_powers.append(float(np.mean(powers[recovery])))
+
+        rows.append({
+            **metadata,
+            "effort_number": effort_number,
+            "effort_type": effort_type,
+            "lap_number": lap_number,
+            "corner_id": f"C{corner_number}",
+            "course_position_m": round(float(corner_position), 1),
+            "covered_passes": len(apex_speeds),
+            "entry_mph": round(float(np.mean(entry_speeds)), 2)
+            if entry_speeds else None,
+            "apex_mph": round(float(np.mean(apex_speeds)), 2),
+            "retained_ratio": round(float(np.mean(retentions)), 4)
+            if retentions else None,
+            "power_after_corner_w": round(float(np.mean(recovery_powers)), 1)
+            if recovery_powers else None,
+        })
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -839,7 +1111,7 @@ if not st.session_state.trim_confirmed:
             map_points(r), mode="trim",
             start_index=st.session_state.trim_start_idx,
             end_index=st.session_state.trim_end_idx,
-            key=f"trim-map-{st.session_state.trim_revision}",
+            key="trim-map",
         )
         trimmed_preview = r.iloc[
             st.session_state.trim_start_idx:st.session_state.trim_end_idx + 1
@@ -859,6 +1131,9 @@ if not st.session_state.trim_confirmed:
             st.session_state.start_finish = None
             st.session_state.start_finish_confirmed = False
             st.session_state.features = []
+            st.session_state.corner_editing = False
+            st.session_state.corner_added_positions = []
+            st.session_state.corner_removed_positions = []
             st.rerun()
     if isinstance(trim_result, dict) and trim_result.get("type") == "trim":
         start_idx = int(trim_result["start_index"])
@@ -910,7 +1185,7 @@ if not st.session_state.start_finish_confirmed:
             })
         gate_result = route_map(
             map_points(trimmed), mode="click", markers=gate_markers,
-            key=f"gate-map-{st.session_state.map_revision}",
+            key="gate-map",
         )
         if st.session_state.start_finish:
             st.caption("Timing point selected.")
@@ -918,7 +1193,13 @@ if not st.session_state.start_finish_confirmed:
                 st.session_state.start_finish_confirmed = True
                 st.session_state.map_revision += 1
                 st.rerun()
-    if isinstance(gate_result, dict) and gate_result.get("type") == "point":
+    if (
+        isinstance(gate_result, dict)
+        and gate_result.get("type") == "point"
+        and gate_result.get("event_id")
+        != st.session_state.last_gate_map_event_id
+    ):
+        st.session_state.last_gate_map_event_id = gate_result.get("event_id")
         point = trimmed.iloc[int(gate_result["index"])]
         st.session_state.start_finish = (float(point["x"]), float(point["y"]))
         st.session_state.start_finish_confirmed = False
@@ -938,18 +1219,19 @@ passes = fu.find_gate_passes(
     trimmed, gx, gy, radius=st.session_state.gate_radius_m,
     min_gap_s=MIN_LAP_GAP_S,
 )
-if len(passes) < 3:
+if len(passes) < 2:
     st.error(
         f"Only found {len(passes)} crossing(s) of the start/finish point. "
-        "Check that the start/finish marker is on the route and the trimmed "
-        "ride covers multiple laps. Lap detection currently uses fixed settings."
+        "At least two crossings (one complete lap) are needed to establish "
+        "the course reference. Check that the start/finish marker is on the "
+        "route and the trim includes a complete lap."
     )
     render_comparison_placeholder()
     st.stop()
 
 laps = fu.filter_short_laps(fu.split_laps(trimmed, passes))
-if len(laps) < 2:
-    st.error("Not enough complete laps found. Adjust the course trim or start/finish marker.")
+if not laps:
+    st.error("No complete lap found. Adjust the course trim or start/finish marker.")
     render_comparison_placeholder()
     st.stop()
 
@@ -987,23 +1269,45 @@ if st.session_state.feature_start_index is not None and st.session_state.feature
         "start_index": st.session_state.feature_start_index,
         "end_index": st.session_state.feature_end_index,
     })
-corner_positions = detect_ride1_corners(
-    grid, profs, L, feature_intervals,
+corner_positions = merge_corner_positions(
+    grid, L,
+    detect_ride1_corners(grid, rx, ry, profs, L, feature_intervals),
+    st.session_state.corner_added_positions,
+    st.session_state.corner_removed_positions,
+    feature_intervals,
 )
 feature_markers.extend(
-    {"index": index, "label": f"C{number}", "color": "#2F2C88"}
-    for number, (index, _) in enumerate(corner_positions, start=1)
+    {
+        "index": index,
+        "label": f"C{number}",
+        "color": "#2F2C88",
+        "corner_position": position,
+    }
+    for number, (index, position) in enumerate(corner_positions, start=1)
 )
 
 feature_result = None
 with map_slot.container(border=True):
-    st.header("Mark feature areas" if st.session_state.feature_editing else "Ride 1 course map")
+    st.header(
+        "Edit corner markers" if st.session_state.corner_editing
+        else "Mark feature areas" if st.session_state.feature_editing
+        else "Ride 1 course map"
+    )
     st.caption("Lap start/finish point confirmed.")
     if st.button("Change start/finish point", key="change_start_finish_in_map"):
         st.session_state.start_finish_confirmed = False
+        st.session_state.corner_editing = False
+        st.session_state.corner_added_positions = []
+        st.session_state.corner_removed_positions = []
         st.session_state.map_revision += 1
         st.rerun()
-    if st.session_state.feature_editing:
+    if st.session_state.corner_editing:
+        st.caption(
+            "Click an empty route point to add a corner marker. Click an "
+            "existing marker to remove it. Changes update the map and "
+            "Ride 1 corner speed table."
+        )
+    elif st.session_state.feature_editing:
         st.caption(
             "Click the start and end of each feature in the direction of travel. "
             "Confirm the feature here; blank names are numbered automatically."
@@ -1014,21 +1318,32 @@ with map_slot.container(border=True):
             placeholder="e.g. Barrier, Sand, Corner",
         )
     else:
-        st.caption("Speed-colored Ride 1 map. Add another feature from this map.")
+        st.caption(
+            "Speed-colored Ride 1 map. Edit detected corner markers or add "
+            "another feature."
+        )
     feature_result = route_map(
         [[float(x), float(y), float(pos)] for x, y, pos in zip(rx, ry, grid)]
         + [[float(rx[0]), float(ry[0]), float(L)]],
-        mode="click" if st.session_state.feature_editing else "view",
+        mode=(
+            "corner_edit" if st.session_state.corner_editing
+            else "click" if st.session_state.feature_editing else "view"
+        ),
         markers=feature_markers,
         segments=feature_segments,
         point_colors=speed_point_colors(
             np.concatenate((profs.mean(axis=0), profs.mean(axis=0)[:1])),
             SPEED_RED_TO_GREEN,
         ),
-        key=f"feature-map-{st.session_state.map_revision}",
+        key="feature-map",
     )
-    control_col, secondary_col = st.columns([1, 1])
-    if st.session_state.feature_editing:
+    control_col, secondary_col, tertiary_col = st.columns([1, 1, 1])
+    if st.session_state.corner_editing:
+        if control_col.button("Finish editing corners", key="finish_corner_editing"):
+            st.session_state.corner_editing = False
+            st.session_state.map_revision += 1
+            st.rerun()
+    elif st.session_state.feature_editing:
         if control_col.button(
             "Confirm feature",
             disabled=(
@@ -1061,22 +1376,85 @@ with map_slot.container(border=True):
                 st.session_state.feature_end_index = None
                 st.session_state.map_revision += 1
                 st.rerun()
-    elif control_col.button("Add new feature", key="add_feature_in_map"):
-        st.session_state.feature_editing = True
-        st.session_state.feature_start_index = None
-        st.session_state.feature_end_index = None
-        st.session_state.map_revision += 1
-        st.rerun()
+        if tertiary_col.button("Skip features", key="skip_features_in_map"):
+            st.session_state.feature_start_index = None
+            st.session_state.feature_end_index = None
+            st.session_state.feature_editing = False
+            st.session_state.map_revision += 1
+            st.rerun()
+    else:
+        if control_col.button("Edit corners", key="edit_corners_in_map"):
+            st.session_state.corner_editing = True
+            st.session_state.map_revision += 1
+            st.rerun()
+        if secondary_col.button("Add new feature", key="add_feature_in_map"):
+            st.session_state.feature_editing = True
+            st.session_state.feature_start_index = None
+            st.session_state.feature_end_index = None
+            st.session_state.map_revision += 1
+            st.rerun()
 if (
     st.session_state.feature_editing
+    and not st.session_state.corner_editing
     and isinstance(feature_result, dict)
     and feature_result.get("type") == "point"
+    and feature_result.get("event_id")
+    != st.session_state.last_feature_map_event_id
 ):
+    st.session_state.last_feature_map_event_id = feature_result.get("event_id")
     point_index = int(feature_result["index"])
     if st.session_state.feature_start_index is None:
         st.session_state.feature_start_index = point_index
     else:
         st.session_state.feature_end_index = point_index
+    st.session_state.map_revision += 1
+    st.rerun()
+if (
+    st.session_state.corner_editing
+    and isinstance(feature_result, dict)
+    and feature_result.get("type") == "point"
+    and feature_result.get("event_id")
+    != st.session_state.last_feature_map_event_id
+):
+    st.session_state.last_feature_map_event_id = feature_result.get("event_id")
+    point_index = int(feature_result["index"]) % len(grid)
+    position = float(grid[point_index])
+    inside_feature = any(
+        start <= position <= end if start <= end
+        else position >= start or position <= end
+        for start, end in feature_intervals
+    )
+    if inside_feature:
+        st.info("Corner markers cannot be added inside a marked feature area.")
+    elif any(
+        min(abs(position - existing), L - abs(position - existing)) < 20
+        for _, existing in corner_positions
+    ):
+        st.info("A corner marker already exists near that point.")
+    else:
+        st.session_state.corner_added_positions.append(position)
+        st.session_state.map_revision += 1
+        st.rerun()
+elif (
+    st.session_state.corner_editing
+    and isinstance(feature_result, dict)
+    and feature_result.get("type") == "remove_corner"
+    and feature_result.get("event_id")
+    != st.session_state.last_feature_map_event_id
+):
+    st.session_state.last_feature_map_event_id = feature_result.get("event_id")
+    position = float(feature_result["position"])
+    added_match = next(
+        (
+            added for added in st.session_state.corner_added_positions
+            if min(abs(position - added), L - abs(position - added)) <= 1
+        ),
+        None,
+    )
+    if added_match is not None:
+        st.session_state.corner_added_positions.remove(added_match)
+    else:
+        st.session_state.corner_removed_positions.append(position)
     st.session_state.map_revision += 1
     st.rerun()
 # --------------------------------------------------------------------------
@@ -1158,9 +1536,9 @@ with ride1_slot.container(border=True):
     if len(corner_speed_display.columns) > 1:
         st.markdown("**Corner speed by lap · Ride 1**")
         st.caption(
-            "Each corner is a detected speed minimum on the reference lap. "
-            "Values are the minimum speed within 20 m of that point; marked "
-            "feature areas are excluded."
+            "Corners are identified from the reference route shape and lap "
+            "speed profile. Values are the minimum speed within 20 m of each "
+            "point; marked feature areas are excluded."
         )
         st.dataframe(
             corner_speed_display, hide_index=True, use_container_width=True,
@@ -1727,35 +2105,111 @@ else:
 
 with st.container(border=True):
     st.header("Save this session")
-    sess_date = st.date_input("Date of this ride", value=datetime.now().date())
+    sess_date = pd.Timestamp(r["timestamp"].iloc[0]).date()
+    st.caption(f"Ride date from FIT file: {sess_date.isoformat()}")
     sess_type = st.selectbox("Type", ["practice", "race"])
     sess_course = st.text_input("Course name for history", value=st.session_state.course_name)
+    st.caption("Use the same course name each time to group corner trends together.")
+    rest_threshold_s = 30
+    if sess_type == "practice":
+        rest_threshold_s = st.slider(
+            "Split practice efforts after a stationary rest",
+            min_value=15,
+            max_value=180,
+            value=30,
+            step=5,
+            format="%d seconds",
+            help=(
+                "A low-speed pause with less than 15 m of GPS movement for "
+                "at least this long starts a new practice effort."
+            ),
+        )
 
     if st.button("Add to history"):
         primary_lap_summary = fu.lap_summary(laps)
         average_power = primary_lap_summary["avg_power"].mean()
         row = dict(
             date=str(sess_date), type=sess_type, course=sess_course,
-            n_laps=len(laps),
+            n_laps=len(laps) if sess_type == "race" else None,
             retained_ratio=round(ret["retained_ratio"], 3)
-            if np.isfinite(ret["retained_ratio"]) else None,
+            if sess_type == "race" and np.isfinite(ret["retained_ratio"]) else None,
             power_after_corner_w=round(ret["power_after"], 1)
-            if np.isfinite(ret["power_after"]) else None,
-            entry_mph=round(ret["entry_mph"], 2), apex_mph=round(ret["apex_mph"], 2),
-            cadence_apex=round(ret["cadence_apex"], 1),
-            avg_power_w=round(float(average_power), 1) if np.isfinite(average_power) else None,
-            avg_lap_s=round(float(primary_lap_summary["duration_s"].mean()), 1),
-            avg_speed_mph=round(float(primary_lap_summary["avg_mph"].mean()), 2),
+            if sess_type == "race" and np.isfinite(ret["power_after"]) else None,
+            entry_mph=round(ret["entry_mph"], 2)
+            if sess_type == "race" and np.isfinite(ret["entry_mph"]) else None,
+            apex_mph=round(ret["apex_mph"], 2)
+            if sess_type == "race" and np.isfinite(ret["apex_mph"]) else None,
+            cadence_apex=round(ret["cadence_apex"], 1)
+            if sess_type == "race" and np.isfinite(ret["cadence_apex"]) else None,
+            avg_power_w=round(float(average_power), 1)
+            if sess_type == "race" and np.isfinite(average_power) else None,
+            avg_lap_s=round(float(primary_lap_summary["duration_s"].mean()), 1)
+            if sess_type == "race" else None,
+            avg_speed_mph=round(float(primary_lap_summary["avg_mph"].mean()), 2)
+            if sess_type == "race" else None,
         )
-        for fr in feature_rows:
-            row[f"{fr['feature_type']}_avg_time_s"] = fr["avg_time_s"]
-            row[f"{fr['feature_type']}_avg_power_w"] = fr["avg_power_w"]
+        if sess_type == "race":
+            for fr in feature_rows:
+                row[f"{fr['feature_type']}_avg_time_s"] = fr["avg_time_s"]
+                row[f"{fr['feature_type']}_avg_power_w"] = fr["avg_power_w"]
+        if sess_type == "race":
+            append_lap_history([
+                {
+                    "date": str(sess_date), "type": sess_type,
+                    "course": sess_course, "ride_file": ride_1_name, **lap,
+                }
+                for lap in primary_lap_summary.to_dict(orient="records")
+            ])
+        corner_metadata = {
+            "date": str(sess_date),
+            "type": sess_type,
+            "course": sess_course or "Unspecified course",
+            "ride_file": ride_1_name,
+        }
+        if sess_type == "practice":
+            efforts = split_practice_efforts(trimmed, rest_threshold_s)
+            corner_rows = []
+            for effort_number, effort in enumerate(efforts, start=1):
+                effort_distance = float(
+                    effort["distance"].iloc[-1] - effort["distance"].iloc[0]
+                )
+                effort_type = (
+                    "practice effort"
+                    if effort_distance >= L * 0.8 else "partial effort"
+                )
+                corner_rows.extend(corner_history_rows(
+                    effort, corner_positions, grid, rx, ry, L,
+                    corner_metadata, effort_number, effort_type,
+                ))
+        else:
+            corner_rows = []
+            for lap_number, lap in enumerate(laps, start=1):
+                corner_rows.extend(corner_history_rows(
+                    lap, corner_positions, grid, rx, ry, L,
+                    corner_metadata, lap_number, "race lap", lap_number,
+                ))
+        if sess_type == "practice":
+            for column, field, digits in (
+                ("entry_mph", "entry_mph", 2),
+                ("apex_mph", "apex_mph", 2),
+                ("retained_ratio", "retained_ratio", 3),
+                ("power_after_corner_w", "power_after_corner_w", 1),
+            ):
+                values = [
+                    observation[field] for observation in corner_rows
+                    if observation[field] is not None
+                ]
+                row[column] = round(float(np.mean(values)), digits) if values else None
         append_history(row)
-        append_lap_history([
-            {
-                "date": str(sess_date), "type": sess_type, "course": sess_course,
-                "ride_file": ride_1_name, **lap,
-            }
-            for lap in primary_lap_summary.to_dict(orient="records")
-        ])
+        append_corner_history(corner_rows)
         st.success("Saved to history.")
+        if corner_rows:
+            st.caption(
+                f"Saved {len(corner_rows)} corner observations for historical "
+                f"corner speed and recovery-power trends."
+            )
+        elif corner_positions:
+            st.info(
+                "No corner observations were saved; the recorded effort did "
+                "not cover any detected corner locations."
+            )

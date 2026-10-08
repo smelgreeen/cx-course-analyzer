@@ -42,6 +42,12 @@
     let mapSignature = null;
     let panStart = null;
     let justPanned = false;
+    let interactionSequence = 0;
+
+    function nextInteractionId() {
+      interactionSequence += 1;
+      return `${Date.now()}-${interactionSequence}`;
+    }
 
     function send(type, value) {
       const message = {isStreamlitMessage: true, type};
@@ -77,11 +83,11 @@
     function updateViewBox() {
       if (!svg) return;
       svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
-      scaleTrimMarkers();
+      scaleMarkers();
     }
 
-    function scaleTrimMarkers() {
-      if (!svg || args.mode !== "trim") return;
+    function scaleMarkers() {
+      if (!svg) return;
       const scale = viewBox.width / 900;
       svg.querySelectorAll(".trim-marker").forEach(marker => {
         marker.setAttribute("r", Number(marker.dataset.baseRadius) * scale);
@@ -92,11 +98,18 @@
         label.setAttribute("dy", 4 * scale);
         label.setAttribute("font-size", 10 * scale);
       });
+      svg.querySelectorAll(".corner-mark").forEach(marker => {
+        marker.setAttribute("r", Number(marker.dataset.baseRadius) * scale);
+        marker.setAttribute("stroke-width", 2 * scale);
+      });
+      svg.querySelectorAll(".corner-label").forEach(label => {
+        label.setAttribute("font-size", Number(label.dataset.baseFontSize) * scale);
+      });
     }
 
     function zoomAt(factor, x = viewBox.x + viewBox.width / 2, y = viewBox.y + viewBox.height / 2) {
-      const width = Math.max(90, Math.min(900, viewBox.width * factor));
-      const height = Math.max(50, Math.min(500, viewBox.height * factor));
+      const width = Math.max(30, Math.min(900, viewBox.width * factor));
+      const height = Math.max(500 * 30 / 900, Math.min(500, viewBox.height * factor));
       const xRatio = (x - viewBox.x) / viewBox.width;
       const yRatio = (y - viewBox.y) / viewBox.height;
       viewBox = {
@@ -153,6 +166,23 @@
         circle.setAttribute("stroke", marker.color || "#D74642");
         if (marker.label) {
           circle.setAttribute("r", "11");
+          circle.dataset.baseRadius = "11";
+        }
+        if (args.mode === "corner_edit" && marker.corner_position !== undefined) {
+          circle.dataset.cornerPosition = marker.corner_position;
+          circle.style.cursor = "pointer";
+          circle.addEventListener("pointerdown", event => {
+            event.stopPropagation();
+          });
+          circle.addEventListener("click", event => {
+            event.preventDefault();
+            event.stopPropagation();
+            send("streamlit:setComponentValue", {
+              type: "remove_corner",
+              position: Number(circle.dataset.cornerPosition),
+              event_id: nextInteractionId()
+            });
+          });
         }
         svg.appendChild(circle);
         if (marker.label) {
@@ -161,6 +191,7 @@
           text.setAttribute("dy", "0.35em");
           text.setAttribute("text-anchor", "middle");
           text.setAttribute("font-size", "9");
+          text.dataset.baseFontSize = "9";
           text.setAttribute("font-weight", "700");
           text.setAttribute("fill", "#FFFFFF");
           text.setAttribute("pointer-events", "none");
@@ -193,7 +224,7 @@
           svg.appendChild(text);
         });
       }
-      scaleTrimMarkers();
+      scaleMarkers();
     }
 
     function render(nextArgs) {
@@ -202,8 +233,9 @@
         root.textContent = "Not enough GPS points to display a route.";
         return;
       }
+      const mapStage = args.mode === "trim" ? "trim" : "route";
       const nextMapSignature = JSON.stringify([
-        args.mode, args.points.length, args.points[0], args.points[args.points.length - 1]
+        mapStage, args.points.length, args.points[0], args.points[args.points.length - 1]
       ]);
       if (nextMapSignature !== mapSignature) {
         viewBox = {x: 0, y: 0, width: 900, height: 500};
@@ -219,7 +251,9 @@
       svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       updateViewBox();
       svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-      if (args.mode === "click") svg.classList.add("clickable");
+      if (args.mode === "click" || args.mode === "corner_edit") {
+        svg.classList.add("clickable");
+      }
       const route = document.createElementNS("http://www.w3.org/2000/svg", "path");
       route.setAttribute("class", "route");
       svg.appendChild(route);
@@ -227,14 +261,22 @@
       const controls = document.createElement("div");
       controls.className = "map-controls";
       [
-        ["+", () => zoomAt(0.75), "Zoom in"],
-        ["−", () => zoomAt(1.33), "Zoom out"],
+        ["+", () => zoomAt(0.65), "Zoom in"],
+        ["−", () => zoomAt(1.5), "Zoom out"],
         ["↺", () => { viewBox = {x: 0, y: 0, width: 900, height: 500}; updateViewBox(); }, "Reset zoom"]
       ].forEach(([label, action, title]) => {
         const button = document.createElement("button");
         button.type = "button"; button.textContent = label; button.title = title;
         button.setAttribute("aria-label", title);
-        button.addEventListener("click", action);
+        button.addEventListener("pointerdown", event => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        button.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          action();
+        });
         controls.appendChild(button);
       });
       map.appendChild(controls);
@@ -245,7 +287,7 @@
         const point = svg.createSVGPoint();
         point.x = event.clientX; point.y = event.clientY;
         const local = point.matrixTransform(svg.getScreenCTM().inverse());
-        zoomAt(event.deltaY < 0 ? 0.85 : 1.18, local.x, local.y);
+        zoomAt(event.deltaY < 0 ? 0.8 : 1.25, local.x, local.y);
       }, {passive: false});
       svg.addEventListener("pointerdown", event => {
         if (event.button !== 0) return;
@@ -328,23 +370,44 @@
         });
         startInput.addEventListener("change", commit);
         endInput.addEventListener("change", commit);
-      } else if (args.mode === "click") {
+      } else if (args.mode === "click" || args.mode === "corner_edit") {
         const hint = document.createElement("div");
         hint.className = "hint";
-        hint.textContent = "Scroll to zoom, drag to pan, or click the route to place a point.";
+        hint.textContent = args.mode === "corner_edit"
+          ? "Scroll to zoom, drag to pan, click the route to add a corner, or click a corner marker to remove it."
+          : "Scroll to zoom, drag to pan, or click the route to place a point.";
         root.appendChild(hint);
         svg.addEventListener("click", event => {
-          if (justPanned) return;
+          if (justPanned || event.target.closest("button, input, .corner-mark")) return;
           const point = svg.createSVGPoint();
           point.x = event.clientX; point.y = event.clientY;
           const local = point.matrixTransform(svg.getScreenCTM().inverse());
           let nearest = -1, best = Infinity;
-          projected.forEach((p, i) => {
-            const distance = Math.hypot(p[0] - local.x, p[1] - local.y);
-            if (distance < best) { best = distance; nearest = i; }
-          });
-          if (nearest >= 0 && best < 36) {
-            send("streamlit:setComponentValue", {type: "point", index: nearest});
+          for (let i = 0; i < projected.length - 1; i++) {
+            const [x1, y1] = projected[i];
+            const [x2, y2] = projected[i + 1];
+            const dx = x2 - x1, dy = y2 - y1;
+            const lengthSquared = dx * dx + dy * dy;
+            const fraction = lengthSquared
+              ? Math.max(0, Math.min(1, ((local.x - x1) * dx + (local.y - y1) * dy) / lengthSquared))
+              : 0;
+            const distance = Math.hypot(
+              x1 + fraction * dx - local.x,
+              y1 + fraction * dy - local.y,
+            );
+            if (distance < best) {
+              best = distance;
+              nearest = fraction < 0.5 ? i : i + 1;
+            }
+          }
+          const bounds = svg.getBoundingClientRect();
+          const selectionRadius = 18 * viewBox.width / bounds.width;
+          if (nearest >= 0 && best < selectionRadius) {
+            send("streamlit:setComponentValue", {
+              type: "point",
+              index: nearest,
+              event_id: nextInteractionId()
+            });
           }
         });
       } else {

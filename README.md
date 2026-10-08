@@ -42,21 +42,32 @@ The sidebar navigation switches between **Analysis** and **Ride history**.
 3. Set the lap start/finish point. Zoom in if course sections are close,
    then adjust the detection radius (2–20 m; default 6 m) to avoid
    selecting a nearby section. Lap detection also requires a 20 second
-   minimum gap between crossings. After laps are detected, mark feature
+   minimum gap between crossings and one complete lap to establish the
+   course reference. After laps are detected, mark feature
    areas on the single reference lap (not the full multi-lap recording):
    enter a type (for example, "Barrier"), click start and end in the
-   direction of travel, and select **Confirm**. Reuse types for comparable
+   direction of travel, and select **Confirm**. Select **Skip features**
+   to continue without marking any more features. Reuse types for comparable
    features; blank names are numbered automatically. Feature intervals
    are timed by type and excluded from cornering/corner-speed detection.
 4. After setup, the main map shows Ride 1's speed-colored course and the
    panel beside it contains Ride 1 metrics and lap data only, including
    numbered corner tags that match the Ride 1 lap-by-corner speed table.
+   Choose **Edit corners** on the map to add missed corner markers by
+   clicking the route or remove an incorrect marker by clicking it. Manual
+   changes also update the speed table and corner-history measurements.
    Scroll down for comparison upload, paired maps, comparison tables,
    charts, and the written Ride 1/Ride 2 analysis.
 5. **Add the main ride to history** at the bottom of Analysis to track
-   trends over time. Download the history CSV periodically if you're
-   using the hosted version. Ride History shows an overview plus
-   cross-course graphs for corner retention and power after corners.
+   trends over time. Select **practice** to split a ride into efforts
+   around sustained stationary rests (the rest duration is configurable).
+   Practice efforts save historical corner speed, speed retention, and
+   recovery power only for corners they cover; partial efforts are kept
+   without inventing lap times or zero values for uncovered corners.
+   Race history records those same metrics per full lap. Ride History
+   shows trends for the same corner on a selected course. Session,
+   per-lap, and corner history tables can be edited or deleted; download
+   the corresponding CSVs periodically if you're using the hosted version.
 6. To compare another race on the same course, upload its `.fit` file
    in the Ride 2 card below the main map. The confirmed timing
    point and feature areas are reused; lap times, cornering retention,
@@ -64,9 +75,8 @@ The sidebar navigation switches between **Analysis** and **Ride history**.
    Ride 1 differences.
    The comparison ride is not saved. Ride history also stores per-lap
    speed, power, duration, and cadence; those values remain editable and
-   downloadable even though the progress graphs focus on retention and
-   power out of corners. You can restore a CSV backup or explicitly
-   confirm deletion of either local history file.
+   downloadable. In the Vercel app, session, per-lap, and corner-history
+   records can be edited in Ride History and backed up as CSV or JSON.
 
 Ride-comparison tables place matching Ride 1 and Ride 2 metrics beside
 each other and use compact headers to reduce unnecessary table width.
@@ -98,7 +108,30 @@ Feature segments are recorded as course-relative start/end distances on
 the reference lap. Each interval is timed on every lap and measurements
 are grouped by the feature type you entered.
 
-## Deploying for free (Streamlit Community Cloud)
+## Deploying to Vercel
+
+The root `index.html` is the Vercel-native browser app; the Streamlit app
+remains available locally through `python -m streamlit run app.py`. Vercel
+serves the static interface and runs `api/ride.py` as a Python Function,
+reusing `fit_utils.py` for FIT parsing and lap analysis.
+
+1. Import this GitHub repository in Vercel and deploy it from the repository
+   root. Choose the **Other** framework preset and leave the build command
+   empty.
+2. Vercel installs Python packages from `requirements.txt` and publishes
+   `index.html` plus the `/api/ride` function.
+3. Open the deployment URL and upload a FIT file to start analysis.
+
+The Vercel interface currently limits FIT uploads to 4 MB to stay below
+Vercel Function request-body limits. Uploaded files are processed in the
+Function and are not saved to the project filesystem. Courses and history
+are kept in the current browser's local storage; use **Export history** to
+download a JSON backup and **Import history JSON** to restore it in another
+browser. Clearing browser data also clears those locally stored records.
+The Ride History page includes editable session, lap, and corner-observation
+tables, individual record deletion, trend charts, and a season overview.
+
+## Deploying to Streamlit Community Cloud
 
 1. Push this folder to a **public** GitHub repository.
 2. Go to <https://share.streamlit.io>, sign in with GitHub, and click
@@ -119,12 +152,10 @@ hosted database (e.g. a free Postgres instance on Render or Railway)
 is the natural next step so saved data stops depending on the app's
 local disk at all.
 
-**Privacy note:** anyone who uses a version you host is uploading
-their own GPS ride data. Nothing in this app sends that data anywhere
-outside the app itself, but if you share the link publicly it's worth
-deciding up front whether you want that to be a shared/public space or
-something closer to invite-only, since there's no per-user login or
-data separation in this version.
+**Privacy note:** users upload GPS ride data to the host for analysis. The
+Vercel version does not persist uploaded rides, but browser-local history
+is not account-protected and is only available in that browser. The
+Streamlit version has no per-user login or data separation.
 
 ## Project layout
 
@@ -133,6 +164,9 @@ app.py             Streamlit page navigation
 analysis_page.py   Ride analysis UI
 fit_utils.py        Parsing + analysis logic (no Streamlit dependency,
                      reusable/testable on its own)
+index.html          Vercel-native browser interface
+api/ride.py         Vercel Python Function for FIT parsing and analysis
+vercel.json         Vercel response headers and configuration
 route_map.py        Python wrapper for the interactive route component
 route_map_frontend/ Browser-side route rendering and interaction
 pages/History.py    Sidebar history dashboard
