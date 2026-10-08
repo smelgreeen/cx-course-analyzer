@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
@@ -428,6 +429,27 @@ def corner_history_rows(
 
 
 class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        if path not in ("/", "/index.html"):
+            self._respond(404, {"error": "The requested page was not found."})
+            return
+
+        html_path = Path(__file__).resolve().parent.parent / "index.html"
+        try:
+            body = html_path.read_bytes()
+        except OSError as error:
+            print(f"Frontend could not be read: {error}")
+            self._respond(500, {"error": "The application page could not be loaded."})
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         try:
             content_length = int(self.headers.get("Content-Length", "0"))

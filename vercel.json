@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/ride.py": {
-      "excludeFiles": "{analysis_page.py,app.py,pages/**,route_map.py,route_map_frontend/**,.streamlit/**,README.md,index.html}"
+      "excludeFiles": "{analysis_page.py,app.py,pages/**,route_map.py,route_map_frontend/**,.streamlit/**,README.md}"
     }
   },
   "headers": [
